@@ -56,7 +56,7 @@ class FaissEngine:
         self,
         index_path: Optional[Path] = None,
         db_path: Optional[Path] = None,
-        dimension: int = 1536,  # OpenAI embedding dimension
+        dimension: int = 2048,  # llama-3.2-nv-embedqa-1b-v2 embedding dimension
     ):
         self.settings = get_settings()
         self.index_path = index_path or self.settings.faiss_index_path

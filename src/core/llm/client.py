@@ -18,11 +18,19 @@ class LLMClient:
     def __init__(self):
         self.settings = get_settings()
 
-        # Initialize NVIDIA NIM client (primary)
+        # Initialize NVIDIA NIM client for chat (primary)
         self.nvidia_client = openai.OpenAI(
             base_url=self.settings.nvidia_base_url, api_key=self.settings.nvidia_api_key
         )
         self.nvidia_model = self.settings.nvidia_model
+
+        # Initialize separate NVIDIA NIM client for embeddings
+        self.embedding_client = openai.OpenAI(
+            base_url=self.settings.nvidia_base_url,
+            api_key=self.settings.nvidia_embedding_api_key
+            or self.settings.nvidia_api_key,
+        )
+        self.embedding_model = "nvidia/llama-3.2-nv-embedqa-1b-v2"
 
         # Initialize Groq client (secondary) if key available
         self.groq_client = None
@@ -150,9 +158,11 @@ class LLMClient:
         """
         if model == "nvidia":
             # Use NVIDIA's embedding model via OpenAI-compatible API
-            response = self.nvidia_client.embeddings.create(
-                model="nvidia/nv-embed-v1",  # Or other embedding model
+            response = self.embedding_client.embeddings.create(
+                model=self.embedding_model,
                 input=texts,
+                encoding_format="float",
+                extra_body={"input_type": "query", "truncate": "NONE"},
             )
             return [item.embedding for item in response.data]
         else:

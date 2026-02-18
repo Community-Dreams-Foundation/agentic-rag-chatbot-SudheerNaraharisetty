@@ -25,6 +25,9 @@ class Settings(BaseSettings):
 
     # NVIDIA NIM Configuration
     nvidia_api_key: str = Field(alias="NVIDIA_API_KEY")
+    nvidia_embedding_api_key: Optional[str] = Field(
+        default=None, alias="NVIDIA_EMBEDDING_API_KEY"
+    )
     nvidia_base_url: str = Field(
         default="https://integrate.api.nvidia.com/v1", alias="NVIDIA_BASE_URL"
     )
