@@ -4,15 +4,30 @@ Used for data analysis tools.
 """
 
 import ast
+import json
 import sys
-import resource
-import signal
+import threading
 import traceback
 from typing import Dict, Any, Optional
 from io import StringIO
 from contextlib import redirect_stdout, redirect_stderr
 
 from src.core.config import get_settings
+
+# Optional Unix-specific imports
+try:
+    import resource
+
+    HAS_RESOURCE = True
+except ImportError:
+    HAS_RESOURCE = False
+
+try:
+    import signal
+
+    HAS_SIGNAL = True
+except ImportError:
+    HAS_SIGNAL = False
 
 
 class SandboxError(Exception):
@@ -25,11 +40,6 @@ class TimeoutError(Exception):
     """Raised when code execution times out."""
 
     pass
-
-
-def timeout_handler(signum, frame):
-    """Signal handler for execution timeout."""
-    raise TimeoutError("Code execution exceeded time limit")
 
 
 class SafeSandbox:
@@ -232,15 +242,23 @@ class SafeSandbox:
         if context:
             safe_globals.update(context)
 
-        # Set up timeout
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(self.timeout)
+        # Set up timeout using threading (cross-platform)
+        timeout_occurred = threading.Event()
+
+        def timeout_worker():
+            timeout_occurred.wait(self.timeout)
+            if not timeout_occurred.is_set():
+                timeout_occurred.set()
+
+        timeout_thread = threading.Thread(target=timeout_worker, daemon=True)
+        timeout_thread.start()
 
         try:
             # Capture output
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
                 # Execute code
                 exec(code, safe_globals)
+                timeout_occurred.set()  # Mark as completed
 
             # Get result
             result = safe_globals.get("result", None)
@@ -251,8 +269,6 @@ class SafeSandbox:
             if len(output) > self.max_output_length:
                 output = output[: self.max_output_length] + "\n... (output truncated)"
 
-            signal.alarm(0)  # Cancel timeout
-
             return {
                 "success": True,
                 "error": error if error else None,
@@ -260,23 +276,20 @@ class SafeSandbox:
                 "result": result,
             }
 
-        except TimeoutError:
-            return {
-                "success": False,
-                "error": f"Code execution timeout after {self.timeout} seconds",
-                "output": stdout_buffer.getvalue(),
-                "result": None,
-            }
         except Exception as e:
-            signal.alarm(0)  # Cancel timeout
+            if timeout_occurred.is_set() and "execution timeout" in str(e).lower():
+                return {
+                    "success": False,
+                    "error": f"Code execution timeout after {self.timeout} seconds",
+                    "output": stdout_buffer.getvalue(),
+                    "result": None,
+                }
             return {
                 "success": False,
                 "error": f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}",
                 "output": stdout_buffer.getvalue(),
                 "result": None,
             }
-        finally:
-            signal.signal(signal.SIGALRM, old_handler)
 
 
 # Convenience function for weather analysis
