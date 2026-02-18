@@ -263,3 +263,100 @@ class WeatherAnalyzer:
                 )
 
         return {"window_size": window, "rolling_averages": rolling}
+
+
+class WeatherQueryParser:
+    """Parse natural language weather queries."""
+
+    def __init__(self):
+        self.metric_keywords = {
+            "temperature": "temperature_2m",
+            "temp": "temperature_2m",
+            "humidity": "relative_humidity_2m",
+            "precipitation": "precipitation",
+            "rain": "precipitation",
+            "wind": "wind_speed_10m",
+            "pressure": "surface_pressure",
+        }
+
+    def parse_query(self, query: str) -> Dict[str, Any]:
+        """
+        Parse natural language weather query.
+
+        Args:
+            query: Natural language query (e.g., "What's the humidity in New York last week?")
+
+        Returns:
+            Dict with location, metric, time_period, comparison
+        """
+        import re
+
+        query_lower = query.lower()
+
+        # Extract location - look for "in [Location]" or "for [Location]"
+        location = None
+        location_patterns = [
+            r"in\s+([A-Za-z\s]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|$)",
+            r"for\s+([A-Za-z\s]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|$)",
+        ]
+        for pattern in location_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                location = match.group(1).strip()
+                break
+
+        # Extract metric
+        metric = "temperature_2m"  # default
+        for keyword, api_metric in self.metric_keywords.items():
+            if keyword in query_lower:
+                metric = api_metric
+                break
+
+        # Extract time period
+        time_period = "current"
+        if "last week" in query_lower or "past week" in query_lower:
+            time_period = "last_week"
+        elif "yesterday" in query_lower:
+            time_period = "yesterday"
+        elif "last month" in query_lower or "past month" in query_lower:
+            time_period = "last_month"
+
+        # Check for comparison
+        comparison = (
+            "compared" in query_lower or "vs" in query_lower or "versus" in query_lower
+        )
+
+        return {
+            "location": location,
+            "metric": metric,
+            "time_period": time_period,
+            "comparison": comparison,
+            "original_query": query,
+        }
+
+    def get_date_range(self, time_period: str) -> tuple:
+        """
+        Convert time period to date range.
+
+        Args:
+            time_period: Time period string (e.g., "last_week")
+
+        Returns:
+            Tuple of (start_date, end_date) as strings (YYYY-MM-DD)
+        """
+        today = datetime.now()
+        end_date = today.strftime("%Y-%m-%d")
+
+        if time_period == "yesterday":
+            start = today - timedelta(days=1)
+            start_date = start.strftime("%Y-%m-%d")
+        elif time_period == "last_week":
+            start = today - timedelta(days=7)
+            start_date = start.strftime("%Y-%m-%d")
+        elif time_period == "last_month":
+            start = today - timedelta(days=30)
+            start_date = start.strftime("%Y-%m-%d")
+        else:  # current
+            start_date = end_date
+
+        return (start_date, end_date)
