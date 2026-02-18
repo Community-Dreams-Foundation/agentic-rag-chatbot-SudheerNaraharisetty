@@ -52,5 +52,8 @@ types-requests>=2.31.0
 # Security
 bandit>=1.7.0
 
+# Geocoding for location services
+geopy>=2.4.0
+
 # Optional: For GPU acceleration (uncomment if using faiss-gpu)
 # faiss-gpu>=1.8.0
