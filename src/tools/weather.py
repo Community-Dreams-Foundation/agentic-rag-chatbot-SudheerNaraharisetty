@@ -4,9 +4,11 @@ Implements safe sandbox for data analysis.
 """
 
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import requests
 from datetime import datetime, timedelta
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 from src.core.config import get_settings
 
@@ -17,6 +19,26 @@ class OpenMeteoClient:
     def __init__(self):
         self.settings = get_settings()
         self.base_url = self.settings.open_meteo_base_url
+        self.geolocator = Nominatim(user_agent="agentic-rag-chatbot")
+
+    def geocode_location(self, location_name: str) -> Optional[Tuple[float, float]]:
+        """
+        Convert location name to latitude and longitude.
+
+        Args:
+            location_name: Name of location (e.g., "New York", "London")
+
+        Returns:
+            Tuple of (latitude, longitude) or None if not found
+        """
+        try:
+            location = self.geolocator.geocode(location_name, timeout=10)
+            if location:
+                return (location.latitude, location.longitude)
+            return None
+        except (GeocoderTimedOut, GeocoderServiceError) as e:
+            print(f"Geocoding error for '{location_name}': {e}")
+            return None
 
     def get_weather(
         self,
