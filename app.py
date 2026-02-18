@@ -22,7 +22,7 @@ from src.core.config import get_settings
 from src.core.llm.client import LLMClient
 from src.core.rag_pipeline import RAGPipeline
 from src.core.memory.manager import MemoryManager
-from src.tools.weather import OpenMeteoClient, WeatherAnalyzer
+from src.tools.weather import OpenMeteoClient, WeatherAnalyzer, WeatherQueryParser
 from src.tools.sandbox import SafeSandbox
 
 # Load environment variables
@@ -43,6 +43,7 @@ if "rag_pipeline" not in st.session_state:
         st.session_state.memory_manager = MemoryManager()
         st.session_state.weather_client = OpenMeteoClient()
         st.session_state.weather_analyzer = WeatherAnalyzer()
+        st.session_state.weather_parser = WeatherQueryParser()
         st.session_state.sandbox = SafeSandbox()
         st.session_state.messages = []
         st.session_state.documents_ingested = []
@@ -208,13 +209,94 @@ GROQ_API_KEY=gsk-your-key-here
                         # Check if it's a tool query
                         if any(
                             keyword in user_input.lower()
-                            for keyword in ["weather", "temperature", "forecast"]
+                            for keyword in [
+                                "weather",
+                                "temperature",
+                                "forecast",
+                                "humidity",
+                            ]
                         ):
-                            # Handle weather query
-                            st.write(
-                                "🌤️ I'll help you with weather information. Please use the Tools tab for detailed weather analysis."
-                            )
-                            response = "Use the Tools tab for weather queries with location coordinates."
+                            # Parse natural language weather query
+                            parser = st.session_state.weather_parser
+                            parsed = parser.parse_query(user_input)
+
+                            if parsed["location"]:
+                                # Geocode the location
+                                coords = (
+                                    st.session_state.weather_client.geocode_location(
+                                        parsed["location"]
+                                    )
+                                )
+
+                                if coords:
+                                    lat, lon = coords
+                                    metric = parsed["metric"]
+
+                                    if (
+                                        parsed["comparison"]
+                                        or parsed["time_period"] != "current"
+                                    ):
+                                        # Get historical and current data for comparison
+                                        start_date, end_date = parser.get_date_range(
+                                            parsed["time_period"]
+                                        )
+
+                                        # Get historical data
+                                        hist_data = st.session_state.weather_client.get_historical_weather(
+                                            lat,
+                                            lon,
+                                            start_date,
+                                            end_date,
+                                            daily=[metric],
+                                        )
+                                        hist_analysis = st.session_state.weather_analyzer.analyze_time_series(
+                                            hist_data, variable=metric
+                                        )
+
+                                        # Get current data
+                                        current_data = (
+                                            st.session_state.weather_client.get_weather(
+                                                lat, lon, hourly=[metric]
+                                            )
+                                        )
+                                        current_analysis = st.session_state.weather_analyzer.analyze_time_series(
+                                            current_data, variable=metric
+                                        )
+
+                                        # Generate comparison response
+                                        response = f"Based on the data for {parsed['location'].title()}:\n\n"
+                                        response += f"**{parsed['time_period'].replace('_', ' ').title()}**: Average {metric.replace('_', ' ')} was {hist_analysis['mean']:.1f}\n"
+                                        response += f"**Current**: Average {metric.replace('_', ' ')} is {current_analysis['mean']:.1f}\n\n"
+
+                                        if hist_analysis["mean"] != 0:
+                                            change = (
+                                                (
+                                                    current_analysis["mean"]
+                                                    - hist_analysis["mean"]
+                                                )
+                                                / hist_analysis["mean"]
+                                            ) * 100
+                                            direction = (
+                                                "higher" if change > 0 else "lower"
+                                            )
+                                            response += f"That's approximately {abs(change):.1f}% {direction} than {parsed['time_period'].replace('_', ' ')}."
+                                    else:
+                                        # Get current weather only
+                                        weather_data = (
+                                            st.session_state.weather_client.get_weather(
+                                                lat, lon, hourly=[metric]
+                                            )
+                                        )
+                                        analysis = st.session_state.weather_analyzer.analyze_time_series(
+                                            weather_data, variable=metric
+                                        )
+
+                                        response = f"Current {metric.replace('_', ' ')} in {parsed['location'].title()}: {analysis['mean']:.1f} (range: {analysis['min']:.1f} - {analysis['max']:.1f})"
+                                else:
+                                    response = f"Sorry, I couldn't find the location '{parsed['location']}'. Please try a different location name."
+                            else:
+                                response = "I couldn't identify a location in your query. Please specify a city or location (e.g., 'What's the weather in New York?')"
+
                             citations = []
 
                         elif any(
