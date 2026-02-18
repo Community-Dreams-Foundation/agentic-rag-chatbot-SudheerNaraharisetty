@@ -172,9 +172,6 @@ class HybridRetriever:
         ]
 
         # Retrieve full metadata for fused results
-        conn = self.faiss_engine._init_sqlite.__wrapped__
-        # Actually, let me fix this - I need to retrieve from SQLite
-
         results = []
         for doc_id, rrf_score in fused_results:
             # Determine source type
