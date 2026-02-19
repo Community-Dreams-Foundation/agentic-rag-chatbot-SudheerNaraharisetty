@@ -20,7 +20,7 @@ A production-grade AI agent that autonomously searches uploaded documents, cites
 
 ## Video Walkthrough
 
-**PASTE YOUR LINK HERE**
+[Video Demo — Google Drive](https://drive.google.com/drive/folders/1rWtbf4SAqg9VXoWphG8skF1JJC9NEdct?usp=sharing)
 
 ---
 
