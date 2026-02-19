@@ -46,9 +46,14 @@ class LLMClient:
         # Primary: OpenRouter client
         self.openrouter_client: Optional[openai.OpenAI] = None
         if self.settings.openrouter_api_key:
+            # OpenRouter requires these headers for proper authentication
             self.openrouter_client = openai.OpenAI(
                 base_url=self.settings.openrouter_base_url,
                 api_key=self.settings.openrouter_api_key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Community-Dreams-Foundation/agentic-rag-chatbot-SudheerNaraharisetty",
+                    "X-Title": "Agentic RAG Chatbot - CDF Hackathon",
+                },
             )
             self.openrouter_model = self.settings.openrouter_model
             self.openrouter_embedding_model = self.settings.openrouter_embedding_model

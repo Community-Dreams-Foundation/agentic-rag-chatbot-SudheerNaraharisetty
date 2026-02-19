@@ -152,7 +152,7 @@ def main():
     # ── Sidebar ─────────────────────────────────────────────────
 
     with st.sidebar:
-        st.header("Configuration")
+        st.header("⚙️ Settings")
 
         # LLM Provider Selection
         llm_provider = st.selectbox(
@@ -162,62 +162,44 @@ def main():
         )
         model = "openrouter" if "OpenRouter" in llm_provider else "groq"
 
-        st.divider()
-
-        # Feature Toggles
-        st.subheader("Features")
         enable_memory = st.checkbox("Memory System", value=True)
-        enable_streaming = st.checkbox("Streaming Responses", value=True)
+        enable_streaming = st.checkbox("Streaming", value=True)
 
         st.divider()
 
         # File Upload
-        st.subheader("Upload Documents")
+        st.subheader("📄 Documents")
         uploaded_files = st.file_uploader(
-            "Upload PDFs, TXT, or Markdown files",
+            "Upload PDFs, TXT, Markdown",
             type=["pdf", "txt", "md", "html"],
             accept_multiple_files=True,
         )
 
         if uploaded_files:
-            with st.spinner("Processing documents..."):
+            with st.spinner("Processing..."):
                 process_uploaded_files(uploaded_files)
-
             if st.session_state.documents_ingested:
-                st.success(
-                    f"{len(st.session_state.documents_ingested)} document(s) indexed"
-                )
+                st.success(f"{len(st.session_state.documents_ingested)} indexed")
 
         st.divider()
 
-        # System Stats
-        st.subheader("System Status")
+        # System Stats - Compact
+        st.subheader("📊 Status")
         pipeline = st.session_state.pipeline
         stats = pipeline.retriever.get_stats()
-        st.metric("Indexed Chunks", stats["faiss_documents"])
-        st.metric("BM25 Corpus", stats["bm25_documents"])
+        st.caption(
+            f"Chunks: {stats['faiss_documents']} | BM25: {stats['bm25_documents']}"
+        )
 
-        # API Key Status
+        # Provider status - Single line
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-        nvidia_key = os.getenv("NVIDIA_API_KEY", "")
-        groq_key = os.getenv("GROQ_API_KEY", "")
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if openrouter_key and "your-key" not in openrouter_key:
-                st.success("OpenRouter", icon="✅")
-            else:
-                st.error("OpenRouter", icon="❌")
-        with col2:
-            if nvidia_key and "your-key" not in nvidia_key:
-                st.success("NVIDIA NIM", icon="✅")
-            else:
-                st.warning("NVIDIA NIM", icon="⚠️")
-        with col3:
-            if groq_key and "your-key" not in groq_key:
-                st.success("Groq", icon="✅")
-            else:
-                st.warning("Groq", icon="⚠️")
+        nvidia_rerank_key = os.getenv("NVIDIA_RERANK_API_KEY", "")
+        providers = []
+        if openrouter_key and "your-key" not in openrouter_key:
+            providers.append("✅ OpenRouter")
+        if nvidia_rerank_key and "your-key" not in nvidia_rerank_key:
+            providers.append("✅ Reranker")
+        st.caption(" | ".join(providers) if providers else "⚠️ Check API keys")
 
     # ── Main Content Tabs ───────────────────────────────────────
 

@@ -88,7 +88,7 @@ class AgentOrchestrator:
         self,
         user_query: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        model: str = "nvidia",
+        model: str = "openrouter",
     ) -> Dict[str, Any]:
         """
         Execute the agent loop.
@@ -194,7 +194,7 @@ class AgentOrchestrator:
         self,
         user_query: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        model: str = "nvidia",
+        model: str = "openrouter",
     ):
         """
         Streaming variant: yields (event_type, data) tuples.

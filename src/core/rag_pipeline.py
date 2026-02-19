@@ -91,13 +91,15 @@ class RAGPipeline:
                 if metadata.chunk_index > 0:
                     locator += f", chunk {metadata.chunk_index}"
 
-                passages.append({
-                    "source": metadata.filename,
-                    "locator": locator,
-                    "text": metadata.text,
-                    "score": round(score, 4),
-                    "retrieval_type": source_type,
-                })
+                passages.append(
+                    {
+                        "source": metadata.filename,
+                        "locator": locator,
+                        "text": metadata.text,
+                        "score": round(score, 4),
+                        "retrieval_type": source_type,
+                    }
+                )
 
             return {"passages": passages}
 
@@ -146,9 +148,7 @@ class RAGPipeline:
             metadata_list=metadata_list,
         )
 
-        logger.info(
-            f"Ingested {len(ids)} chunks from {file_path.name}"
-        )
+        logger.info(f"Ingested {len(ids)} chunks from {file_path.name}")
 
         return {
             "success": True,
@@ -196,7 +196,7 @@ class RAGPipeline:
         self,
         question: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        model: str = "nvidia",
+        model: str = "openrouter",
     ) -> Dict[str, Any]:
         """
         Query the system using the agentic orchestrator.
@@ -207,7 +207,7 @@ class RAGPipeline:
         Args:
             question: User question
             chat_history: Previous conversation turns
-            model: LLM provider ("nvidia" or "groq")
+            model: LLM provider ("openrouter" or "groq")
 
         Returns:
             Dict with answer, citations, tool_calls, memory_writes
@@ -222,7 +222,7 @@ class RAGPipeline:
         self,
         question: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
-        model: str = "nvidia",
+        model: str = "openrouter",
     ) -> Generator:
         """
         Streaming query using the agentic orchestrator.
