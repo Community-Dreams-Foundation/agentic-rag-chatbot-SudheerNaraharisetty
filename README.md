@@ -253,23 +253,34 @@ source venv/bin/activate   # Linux/Mac
 
 # 3. Install dependencies
 pip install -r requirements.txt
+cd frontend && npm install && cd ..
 
 # 4. Configure API keys
 cp .env.example .env
 # Edit .env and add your API keys:
-#   NVIDIA_API_KEY=nvapi-...          (required - Kimi K2.5)
-#   NVIDIA_EMBEDDING_API_KEY=nvapi-... (required - embedding model)
-#   GROQ_API_KEY=gsk-...              (optional - fallback LLM)
+#   OPENROUTER_API_KEY=sk-or-...       (required - LLM + embeddings)
+#   GROQ_API_KEY=gsk-...               (required - fast fallback LLM)
+#   NVIDIA_RERANK_API_KEY=nvapi-...    (required - reranking)
+#   NVIDIA_EMBEDDING_API_KEY=nvapi-... (optional - fallback embeddings)
 
-# 5. Run the application
-streamlit run app.py
+# 5. Run the full stack (FastAPI backend + Next.js frontend)
+node start.js
+# Or run separately:
+#   Terminal 1: python -m uvicorn src.api.server:app --reload --port 8000
+#   Terminal 2: cd frontend && npm run dev
 
-# 6. Run sanity check (for judges)
+# 6. Open the app
+#   Frontend: http://localhost:3000
+#   API Docs: http://localhost:8000/docs
+
+# 7. Run sanity check (for judges)
 make sanity
 python scripts/verify_output.py artifacts/sanity_output.json
 ```
 
-**Requirements**: Python 3.10+, pip, internet connection for API access.
+**Requirements**: Python 3.10+, Node.js 18+, pip, npm, internet connection for API access.
+
+**Stack**: Llama 3.3 70B (OpenRouter) | Qwen3 Embedding 8B (OpenRouter) | NVIDIA NIM Reranker | FAISS + BM25 | LangGraph | Next.js 16 + FastAPI
 
 ---
 

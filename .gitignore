@@ -50,6 +50,9 @@ htmlcov/
 chroma_db/
 faiss_index/
 vector_store/
+data/*.bin
+data/*.pkl
+data/*.db
 
 # Logs
 *.log
@@ -73,6 +76,7 @@ yarn-error.log*
 # Build outputs
 frontend/build/
 frontend/dist/
+frontend/.next/
 
 # Jupyter
 .ipynb_checkpoints/
