@@ -9,6 +9,7 @@ interface StreamCallbacks {
     onToken: (token: string) => void;
     onTool?: (tool: { tool: string; args: Record<string, unknown> }) => void;
     onCitations?: (citations: Array<{ source: string; locator: string; snippet: string }>) => void;
+    onStatus?: (message: string) => void;
     onDone: () => void;
     onError?: (error: string) => void;
 }
@@ -30,6 +31,10 @@ export const apiClient = {
         } catch (e) {
             return { user: '', company: '' };
         }
+    },
+
+    getFileUrl: (filename: string) => {
+        return `${API_URL}/files/${encodeURIComponent(filename)}`;
     },
 
     sendMessage: async (
@@ -90,6 +95,9 @@ export const apiClient = {
                                 case 'citations':
                                     callbacks.onCitations?.(data.citations || []);
                                     break;
+                                case 'status':
+                                    callbacks.onStatus?.(data.content || '');
+                                    break;
                                 case 'error':
                                     callbacks.onError?.(data.content || 'Unknown error');
                                     break;
@@ -124,5 +132,31 @@ export const apiClient = {
             throw new Error(`Upload failed: ${res.status} ${errText}`);
         }
         return res.json();
+    },
+
+    runWeather: async (query: string) => {
+        try {
+            const res = await fetch(`${API_URL}/tools/weather`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query }),
+            });
+            return res.json();
+        } catch (e) {
+            return { error: e instanceof Error ? e.message : 'Weather request failed' };
+        }
+    },
+
+    runSandbox: async (code: string) => {
+        try {
+            const res = await fetch(`${API_URL}/tools/sandbox`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+            });
+            return res.json();
+        } catch (e) {
+            return { error: e instanceof Error ? e.message : 'Sandbox request failed' };
+        }
     },
 };

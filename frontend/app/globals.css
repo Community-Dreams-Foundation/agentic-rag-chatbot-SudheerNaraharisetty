@@ -83,37 +83,37 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.1 0.005 50);
+  --foreground: oklch(0.93 0.01 60);
+  --card: oklch(0.14 0.008 50);
+  --card-foreground: oklch(0.93 0.01 60);
+  --popover: oklch(0.14 0.008 50);
+  --popover-foreground: oklch(0.93 0.01 60);
+  --primary: oklch(0.75 0.18 55);
+  --primary-foreground: oklch(0.12 0 0);
+  --secondary: oklch(0.18 0.01 50);
+  --secondary-foreground: oklch(0.93 0.01 60);
+  --muted: oklch(0.18 0.01 50);
+  --muted-foreground: oklch(0.6 0.03 55);
+  --accent: oklch(0.22 0.03 50);
+  --accent-foreground: oklch(0.93 0.01 60);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
+  --border: oklch(0.25 0.02 50 / 40%);
+  --input: oklch(0.25 0.02 50 / 50%);
+  --ring: oklch(0.75 0.18 55);
+  --chart-1: oklch(0.75 0.18 55);
+  --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: oklch(0.12 0.005 50);
+  --sidebar-foreground: oklch(0.93 0.01 60);
+  --sidebar-primary: oklch(0.75 0.18 55);
+  --sidebar-primary-foreground: oklch(0.93 0.01 60);
+  --sidebar-accent: oklch(0.18 0.01 50);
+  --sidebar-accent-foreground: oklch(0.93 0.01 60);
+  --sidebar-border: oklch(0.25 0.02 50 / 40%);
+  --sidebar-ring: oklch(0.75 0.18 55);
 }
 
 @layer base {
@@ -123,4 +123,86 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Glow animation for chat input */
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(249, 115, 22, 0.15), 0 0 20px rgba(249, 115, 22, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(249, 115, 22, 0.3), 0 0 30px rgba(249, 115, 22, 0.1);
+  }
+}
+
+@keyframes glow-border {
+  0%, 100% {
+    border-color: rgba(249, 115, 22, 0.3);
+  }
+  50% {
+    border-color: rgba(249, 115, 22, 0.6);
+  }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.glow-input {
+  animation: glow-pulse 3s ease-in-out infinite;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  transition: all 0.3s ease;
+}
+
+.glow-input:focus-within {
+  animation: none;
+  box-shadow: 0 0 16px rgba(249, 115, 22, 0.4), 0 0 40px rgba(249, 115, 22, 0.15);
+  border-color: rgba(249, 115, 22, 0.6);
+}
+
+/* Thinking indicator animation */
+@keyframes thinking-dots {
+  0%, 20% { opacity: 0.3; }
+  40% { opacity: 1; }
+  60%, 100% { opacity: 0.3; }
+}
+
+.thinking-dot:nth-child(1) { animation: thinking-dots 1.4s infinite 0s; }
+.thinking-dot:nth-child(2) { animation: thinking-dots 1.4s infinite 0.2s; }
+.thinking-dot:nth-child(3) { animation: thinking-dots 1.4s infinite 0.4s; }
+
+/* Citation highlight */
+.citation-highlight {
+  background: linear-gradient(to right, rgba(250, 204, 21, 0.25), rgba(250, 204, 21, 0.15));
+  border-left: 3px solid rgb(250, 204, 21);
+  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(249, 115, 22, 0.2);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(249, 115, 22, 0.4);
+}
+
+/* Status pulse */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
 }

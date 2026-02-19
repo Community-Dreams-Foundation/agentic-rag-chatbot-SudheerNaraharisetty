@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import os
@@ -40,6 +41,7 @@ class SystemState:
         self.memory_manager: Optional[MemoryManager] = None
         self.initialized = False
         self.ingested_docs = []
+        self.uploaded_files: Dict[str, bytes] = {}  # filename -> bytes for serving
 
 state = SystemState()
 
@@ -90,6 +92,26 @@ async def get_memory():
         "company": state.memory_manager.read_memory("COMPANY")
     }
 
+@app.get("/api/files/{filename}")
+async def get_file(filename: str):
+    """Serve an uploaded file for the PDF viewer."""
+    if filename not in state.uploaded_files:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    content = state.uploaded_files[filename]
+    content_type = "application/pdf" if filename.lower().endswith(".pdf") else "application/octet-stream"
+    if filename.lower().endswith(".txt") or filename.lower().endswith(".md"):
+        content_type = "text/plain"
+
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     if not state.initialized:
@@ -103,8 +125,6 @@ async def chat_endpoint(req: ChatRequest):
                 chat_history=req.history,
                 model=req.model
             ):
-                # Format specific events for frontend
-                # Format specific events for frontend
                 payload = None
                 if event_type == "token":
                     payload = {"type": "token", "content": data}
@@ -112,13 +132,14 @@ async def chat_endpoint(req: ChatRequest):
                     payload = {"type": "tool", "tool": data["tool"], "args": data["args"]}
                 elif event_type == "citations":
                     payload = {"type": "citations", "citations": data}
-                
+                elif event_type == "status":
+                    payload = {"type": "status", "content": data}
+
                 if payload:
-                     # logger.info(f"Yielding payload type: {event_type}")
                      yield ServerSentEvent(data=json.dumps(payload))
                 else:
                      logger.warning(f"Unknown event type: {event_type} Data: {str(data)[:50]}")
-                
+
             # Done
             yield ServerSentEvent(data=json.dumps({"type": "done"}))
         except Exception as e:
@@ -131,27 +152,31 @@ async def chat_endpoint(req: ChatRequest):
 async def upload_document(file: UploadFile = File(...)):
     if not state.initialized:
         raise HTTPException(status_code=503, detail="System not initialized")
-    
+
     try:
         if file.filename in state.ingested_docs:
             return {"status": "skipped", "message": "Already ingested"}
-            
+
         content = await file.read()
+
+        # Store file bytes for serving in PDF viewer
+        state.uploaded_files[file.filename] = content
+
         result = state.pipeline.ingest_bytes(content, file.filename)
-        
+
         if result["success"]:
             state.ingested_docs.append(file.filename)
             return {"status": "success", "filename": file.filename, "chunks": result["chunks_added"]}
         else:
             raise HTTPException(status_code=500, detail=result.get("error"))
-            
+
     except Exception as e:
         logger.error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tools/weather")
 async def tool_weather(req: WeatherRequest):
-    # Direct tool access for "Visual" tab testing
+    # Direct tool access for Tools tab
     parser = WeatherQueryParser()
     try:
         parsed = parser.parse_query(req.query)

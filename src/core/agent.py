@@ -1,16 +1,35 @@
 """
-Agentic Orchestrator: ReAct-style tool-use loop powered by Llama 3.3 70B.
-The LLM autonomously decides which tools to invoke, interprets results,
-and synthesises a grounded, cited answer — no hard-coded keyword routing.
+Agentic Orchestrator: LangGraph-powered tool-use agent with native function calling.
+
+Uses LangGraph StateGraph for structured orchestration and ChatOpenAI for native
+OpenAI-compatible function calling — no manual JSON parsing from LLM output.
+
+Supports both OpenRouter (Llama 3.3 70B, primary) and Groq (Llama 3.3 70B, fast fallback).
 """
 
 import json
 import logging
+import operator
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Callable, Dict, List, Optional, Tuple, TypedDict
+
+from langchain_core.runnables import RunnableConfig
+
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.tools import BaseTool
+from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 
 from src.core.config import get_settings
-from src.core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +45,6 @@ When asked who you are, say: "I'm an Agentic RAG Chatbot built by Sai Sudheer \
 Naraharisetty for the CDF Hackathon. I search uploaded documents, analyze weather, \
 run Python safely, and remember key facts across sessions."
 
-## Tool Calling — CRITICAL
-When you need a tool, respond with **ONLY** the JSON object — nothing else. \
-No explanation, no markdown, no extra text. Just the raw JSON.
-
-Available tools:
-1. {"tool": "search_documents", "args": {"query": "<search query>"}}
-2. {"tool": "get_weather", "args": {"location": "<city>", "metric": "<temperature_2m|relative_humidity_2m|precipitation|wind_speed_10m>", "period": "<current|yesterday|last_week|last_month>"}}
-3. {"tool": "execute_code", "args": {"code": "<python code>"}}
-4. {"tool": "write_memory", "args": {"target": "USER|COMPANY", "summary": "<fact>"}}
-
 ## When NOT to Use Tools
 - Identity questions ("who are you?") → answer directly
 - General knowledge / small talk → answer directly
@@ -48,37 +57,197 @@ Available tools:
 - Cite sources using the format: [Source: filename, Page: X] or [Source: filename, Chunk: Y].
 
 ## Response Format
-- Respond with plain text (no JSON) when providing your final answer.
 - Be concise but thorough. Include relevant details from the documents.
 - NEVER include <think> tags or internal reasoning in your response.
 - NEVER wrap your answer in markdown code blocks unless showing code.
 """
 
 
+# ── LangGraph State ──────────────────────────────────────────────
+
+
+class AgentState(TypedDict):
+    """State schema for the LangGraph agent."""
+
+    messages: Annotated[list, add_messages]
+    citations: Annotated[list, operator.add]
+    tool_calls_log: Annotated[list, operator.add]
+    memory_writes: Annotated[list, operator.add]
+
+
+# ── Agent Orchestrator ───────────────────────────────────────────
+
+
 class AgentOrchestrator:
     """
-    ReAct agent loop:
-      1. Send user query + system prompt + tool descriptions to LLM
-      2. If LLM returns a tool call → execute tool → feed observation back
-      3. Repeat until LLM produces a direct answer or MAX_STEPS reached
+    LangGraph-powered agent with native function calling.
+
+    Architecture:
+      - Uses ChatOpenAI with .bind_tools() for native function calling
+      - LangGraph StateGraph: START → agent → should_continue → (tools | END)
+      - Sync path: graph.invoke() for sanity checks and non-streaming queries
+      - Streaming path: manual loop with .stream() for token-by-token SSE
+      - Groq used for first routing step (22x faster than OpenRouter)
     """
 
     def __init__(
         self,
-        llm_client: LLMClient,
-        tools: Optional[Dict[str, Callable]] = None,
+        llm_client: Any,
+        tools: Optional[List[BaseTool]] = None,
     ):
-        self.llm = llm_client
+        self.llm_client = llm_client  # Kept for embeddings
         self.settings = get_settings()
-        self.tools: Dict[str, Callable] = tools or {}
-        # Use Groq for tool routing (0.4s vs 9s on OpenRouter/Kimi K2.5)
-        # Kimi K2.5 generates extensive reasoning tokens even for simple routing
-        self._has_groq = self.llm.groq_client is not None
+        self._tools = tools or []
+        self._tools_by_name: Dict[str, BaseTool] = {t.name: t for t in self._tools}
 
-    def register_tool(self, name: str, fn: Callable):
-        self.tools[name] = fn
+        # ── Create ChatOpenAI instances ──────────────────────────
+        self._llm_openrouter: Optional[ChatOpenAI] = None
+        self._llm_groq: Optional[ChatGroq] = None
 
-    # ── Main entry point ─────────────────────────────────────────────
+        if self.settings.openrouter_api_key:
+            self._llm_openrouter = ChatOpenAI(
+                base_url=self.settings.openrouter_base_url,
+                api_key=self.settings.openrouter_api_key,
+                model=self.settings.openrouter_model,
+                temperature=0.1,
+                max_tokens=4096,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Community-Dreams-Foundation/agentic-rag-chatbot-SudheerNaraharisetty",
+                    "X-Title": "Agentic RAG Chatbot - CDF Hackathon",
+                },
+            )
+            logger.info(
+                f"LangGraph agent: OpenRouter LLM ready ({self.settings.openrouter_model})"
+            )
+
+        if self.settings.groq_api_key:
+            self._llm_groq = ChatGroq(
+                api_key=self.settings.groq_api_key,
+                model=self.settings.groq_model,
+                temperature=0.3,
+                max_tokens=1024,
+            )
+            logger.info(
+                f"LangGraph agent: Groq LLM ready ({self.settings.groq_model})"
+            )
+
+        # ── Build LangGraph ──────────────────────────────────────
+        self._graph = self._build_graph()
+
+    # ── LLM Accessors ────────────────────────────────────────────
+
+    def _get_llm(self, model: str = "openrouter"):
+        """Get the LLM instance for the given model (ChatOpenAI or ChatGroq)."""
+        if model == "groq" and self._llm_groq:
+            return self._llm_groq
+        if self._llm_openrouter:
+            return self._llm_openrouter
+        if self._llm_groq:
+            return self._llm_groq
+        raise ValueError("No LLM configured — set OPENROUTER_API_KEY or GROQ_API_KEY")
+
+    def _get_llm_with_tools(self, model: str = "openrouter"):
+        """Get LLM with tools bound for native function calling."""
+        llm = self._get_llm(model)
+        if self._tools:
+            return llm.bind_tools(self._tools)
+        return llm
+
+    # ── LangGraph Construction ───────────────────────────────────
+
+    def _build_graph(self) -> Any:
+        """Build the LangGraph StateGraph for tool-use orchestration."""
+        graph = StateGraph(AgentState)
+
+        graph.add_node("agent", self._agent_node)
+        graph.add_node("tools", self._tools_node)
+
+        graph.add_edge(START, "agent")
+        graph.add_conditional_edges(
+            "agent",
+            self._should_continue,
+            {"tools": "tools", "end": END},
+        )
+        graph.add_edge("tools", "agent")
+
+        return graph.compile()
+
+    def _agent_node(self, state: AgentState, config: RunnableConfig = None) -> dict:
+        """LLM decides: call a tool or produce a final answer."""
+        messages = state["messages"]
+        model = (config or {}).get("configurable", {}).get("model", "openrouter")
+
+        # Always use OpenRouter for tool-calling steps — Groq's Llama 3.3
+        # generates tool calls in <function=...> XML format which fails parsing.
+        # Groq is only used when explicitly selected AND as non-tool fallback.
+        llm = self._get_llm_with_tools(model)
+
+        response = llm.invoke(messages)
+
+        # Strip any <think> tags from content
+        if response.content:
+            cleaned = _strip_think_tags(response.content)
+            if cleaned != response.content:
+                response = AIMessage(
+                    content=cleaned,
+                    tool_calls=response.tool_calls if hasattr(response, "tool_calls") else [],
+                    id=response.id,
+                )
+
+        return {"messages": [response]}
+
+    def _tools_node(self, state: AgentState) -> dict:
+        """Execute tool calls from the last AI message."""
+        last_msg = state["messages"][-1]
+        if not hasattr(last_msg, "tool_calls") or not last_msg.tool_calls:
+            return {"messages": [], "citations": [], "tool_calls_log": [], "memory_writes": []}
+
+        tool_messages = []
+        new_citations = []
+        new_tool_log = []
+        new_memory = []
+
+        for tc in last_msg.tool_calls:
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            tool_id = tc["id"]
+
+            logger.info(f"LangGraph tool call: {tool_name}({tool_args})")
+
+            try:
+                tool_fn = self._tools_by_name.get(tool_name)
+                if tool_fn is None:
+                    obs = f"Error: tool '{tool_name}' not found"
+                else:
+                    result = tool_fn.invoke(tool_args)
+                    obs, cits, mems = _postprocess_tool_result(tool_name, tool_args, result)
+                    new_citations.extend(cits)
+                    new_memory.extend(mems)
+            except Exception as e:
+                logger.error(f"Tool {tool_name} failed: {e}")
+                obs = f"Tool error: {e}"
+
+            tool_messages.append(ToolMessage(content=obs, tool_call_id=tool_id))
+            new_tool_log.append(
+                {"tool": tool_name, "args": tool_args, "observation_preview": obs[:300]}
+            )
+
+        return {
+            "messages": tool_messages,
+            "citations": new_citations,
+            "tool_calls_log": new_tool_log,
+            "memory_writes": new_memory,
+        }
+
+    @staticmethod
+    def _should_continue(state: AgentState) -> str:
+        """Route: if last message has tool calls → 'tools', else → 'end'."""
+        last_msg = state["messages"][-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            return "tools"
+        return "end"
+
+    # ── Sync Entry Point (graph.invoke) ──────────────────────────
 
     def run(
         self,
@@ -87,114 +256,51 @@ class AgentOrchestrator:
         model: str = "openrouter",
     ) -> Dict[str, Any]:
         """
-        Execute the agent loop.
-
-        Performance notes:
-          - Step 0 uses temp=0.3 + max_tokens=1024 for fast tool routing.
-          - After tool execution, temp=0.7 + max_tokens=4096 for quality synthesis.
-          - Avoids redundant LLM calls: once a non-tool response is detected it is
-            returned directly — no "re-ask" call.
+        Execute the agent loop synchronously using LangGraph.
 
         Returns:
-            {
-                "answer": str,
-                "citations": List[dict],
-                "tool_calls": List[dict],
-                "memory_writes": List[dict],
-            }
+            {"answer": str, "citations": list, "tool_calls": list, "memory_writes": list}
         """
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-        ]
+        messages = _build_messages(user_query, chat_history)
 
-        if chat_history:
-            for msg in chat_history[-6:]:
-                messages.append(msg)
-
-        messages.append({"role": "user", "content": user_query})
-
-        tool_calls_log: List[Dict] = []
-        citations: List[Dict] = []
-        memory_writes: List[Dict] = []
-
-        for step in range(MAX_AGENT_STEPS):
-            # First step: fast tool-routing (low temp, small budget)
-            # Later steps: quality synthesis (higher temp, larger budget)
-            is_routing = step == 0
-            # Use Groq for routing when available — 22x faster than Kimi K2.5
-            step_model = "groq" if is_routing and self._has_groq else model
-            temperature = 0.3 if is_routing else 0.1
-            max_tokens = 1024 if is_routing else 4096
-
-            response_text = self.llm.chat_completion(
-                messages=messages,
-                model=step_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=False,
-                thinking=False,
-            )
-
-            if response_text is None:
-                response_text = ""
-
-            tool_call = self._extract_tool_call(response_text)
-
-            if tool_call is None:
-                # No tool call → this IS the final answer
-                return {
-                    "answer": self._strip_think_tags(response_text),
-                    "citations": citations,
-                    "tool_calls": tool_calls_log,
-                    "memory_writes": memory_writes,
-                }
-
-            tool_name = tool_call["tool"]
-            tool_args = tool_call.get("args", {})
-            logger.info(f"Agent step {step + 1}: {tool_name}({tool_args})")
-
-            observation, step_citations, step_memory = self._execute_tool(
-                tool_name, tool_args
-            )
-            citations.extend(step_citations)
-            memory_writes.extend(step_memory)
-            tool_calls_log.append(
-                {
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "observation_preview": observation[:300],
-                }
-            )
-
-            messages.append({"role": "assistant", "content": response_text})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Tool result ({tool_name}):\n{observation}",
-                }
-            )
-
-        # Exhausted steps — force a final answer
-        messages.append(
-            {
-                "role": "user",
-                "content": "Provide your final answer now based on the tool results above.",
-            }
-        )
-        final = self.llm.chat_completion(
-            messages=messages,
-            model=model,
-            temperature=0.1,
-            max_tokens=4096,
-            stream=False,
-            thinking=False,
-        )
-        return {
-            "answer": self._strip_think_tags(final) if final else "I was unable to formulate an answer.",
-            "citations": citations,
-            "tool_calls": tool_calls_log,
-            "memory_writes": memory_writes,
+        initial_state: AgentState = {
+            "messages": messages,
+            "citations": [],
+            "tool_calls_log": [],
+            "memory_writes": [],
         }
+
+        config = {
+            "recursion_limit": MAX_AGENT_STEPS * 2 + 2,
+            "configurable": {"model": model},
+        }
+
+        try:
+            final_state = self._graph.invoke(initial_state, config=config)
+        except Exception as e:
+            logger.error(f"LangGraph execution failed: {e}")
+            return {
+                "answer": f"I encountered an error: {e}",
+                "citations": [],
+                "tool_calls": [],
+                "memory_writes": [],
+            }
+
+        # Extract final answer from last AI message with content
+        answer = ""
+        for msg in reversed(final_state["messages"]):
+            if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
+                answer = msg.content
+                break
+
+        return {
+            "answer": answer or "I was unable to formulate an answer.",
+            "citations": final_state.get("citations", []),
+            "tool_calls": final_state.get("tool_calls_log", []),
+            "memory_writes": final_state.get("memory_writes", []),
+        }
+
+    # ── Streaming Entry Point ────────────────────────────────────
 
     def run_stream(
         self,
@@ -204,244 +310,197 @@ class AgentOrchestrator:
     ):
         """
         Streaming variant: yields (event_type, data) tuples.
+
+        Uses manual loop with native function calling for token-by-token streaming.
         event_type is "tool", "token", or "citations".
 
-        Performance: uses non-streaming for tool-routing steps (fast, low temp)
-        and streams only the final synthesis step. Eliminates the old
-        "re-ask for streaming" pattern that caused a redundant 3rd LLM call.
+        Performance: Groq for first routing step, user model for synthesis.
+        Native function calling eliminates JSON parsing — the LLM returns structured
+        tool_calls directly via the OpenAI function calling API.
         """
-        messages: List[Dict[str, str]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-        ]
-        if chat_history:
-            for msg in chat_history[-6:]:
-                messages.append(msg)
-        messages.append({"role": "user", "content": user_query})
-
+        messages = _build_messages(user_query, chat_history)
         all_citations: List[Dict] = []
 
         for step in range(MAX_AGENT_STEPS):
-            is_routing = step == 0
-            is_last_step = step == MAX_AGENT_STEPS - 1
+            if step == 0:
+                yield ("status", "Analyzing your question...")
 
-            # After tool execution: stream the synthesis call directly
-            # so the user sees tokens appearing in real-time.
-            should_stream = step > 0 and not is_last_step
-            # Groq for routing (22x faster), user model for synthesis
-            step_model = "groq" if is_routing and self._has_groq else model
-            temperature = 0.3 if is_routing else 0.1
-            max_tokens = 1024 if is_routing else 4096
+            llm = self._get_llm_with_tools(model)
 
-            if should_stream:
-                # Stream the synthesis response. Buffer the first few
-                # characters to detect tool-call JSON vs. plain text.
-                # Tool calls start with '{', answers start with words.
-                buffer = []
-                flushed = False
+            # Stream the response — native function calling means:
+            #   - Tool calls: chunks have tool_call_chunks, no content
+            #   - Text answer: chunks have content, no tool_calls
+            chunks: List[AIMessageChunk] = []
+            has_text_content = False
 
-                for token in self.llm.chat_completion(
-                    messages=messages,
-                    model=step_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                    thinking=False,
-                ):
-                    if flushed:
-                        yield ("token", token)
-                        continue
-
-                    buffer.append(token)
-                    text_buffer = "".join(buffer).lstrip()
-
-                    if len(text_buffer) >= 2 and text_buffer[0] != "{":
-                        # Starts with text, not JSON → flush buffer and stream
-                        for t in buffer:
-                            yield ("token", t)
-                        buffer = []
-                        flushed = True
-                    
-                    pass  # Buffer silently until we know if it's JSON or text
-
-                if flushed:
-                    # Already streamed the full answer
-                    yield ("citations", all_citations)
-                    return
-
-                # Still buffering → response was short or JSON-like
-                response_text = "".join(buffer)
-                tool_call = self._extract_tool_call(response_text)
-                if tool_call is None:
-                    # It was just a short string answer
-                    yield ("token", response_text)
-                    yield ("citations", all_citations)
-                    return
-                # Rare: another tool call — fall through to handle it
-            else:
-                # Non-streaming: fast tool-routing or last-step forcing
-                response_text = self.llm.chat_completion(
-                    messages=messages,
-                    model=step_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=False,
-                    thinking=False,
-                )
-                if response_text is None:
-                    response_text = ""
-
-                tool_call = self._extract_tool_call(response_text)
-
-                if tool_call is None:
-                    # Final answer — yield it in one shot
-                    yield ("token", response_text)
-                    yield ("citations", all_citations)
-                    return
-
-            tool_name = tool_call["tool"]
-            tool_args = tool_call.get("args", {})
-            yield ("tool", {"tool": tool_name, "args": tool_args})
-
-            observation, step_citations, _ = self._execute_tool(tool_name, tool_args)
-            all_citations.extend(step_citations)
-
-            messages.append({"role": "assistant", "content": response_text})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"Tool result ({tool_name}):\n{observation}",
-                }
-            )
-
-        # Exhausted steps — one final attempt
-        messages.append(
-            {
-                "role": "user",
-                "content": "Provide your final answer now based on the tool results above.",
-            }
-        )
-        for token in self.llm.chat_completion(
-            messages=messages,
-            model=model,
-            temperature=0.1,
-            max_tokens=4096,
-            stream=True,
-            thinking=False,
-        ):
-            yield ("token", token)
-        yield ("citations", all_citations)
-
-    # ── Tool Call Parsing ────────────────────────────────────────────
-
-    _VALID_TOOLS = frozenset(
-        ("search_documents", "get_weather", "execute_code", "write_memory")
-    )
-
-    @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        """Remove <think>...</think> blocks from LLM output."""
-        return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
-
-    @staticmethod
-    def _extract_tool_call(text: str) -> Optional[Dict]:
-        """
-        Extract a JSON tool call from LLM output.
-
-        Uses json.JSONDecoder.raw_decode() to properly handle nested JSON
-        objects (e.g. {"tool": "get_weather", "args": {"location": "Boston"}}).
-        The previous regex r'{[^{}]*}' could never match nested braces.
-        """
-        cleaned = text.strip()
-
-        # Strip markdown code fences if present
-        code_block = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.DOTALL)
-        if code_block:
-            cleaned = code_block.group(1).strip()
-
-        decoder = json.JSONDecoder()
-        pos = 0
-        while pos < len(cleaned):
-            idx = cleaned.find("{", pos)
-            if idx == -1:
-                break
             try:
-                obj, end_idx = decoder.raw_decode(cleaned, idx)
-                if (
-                    isinstance(obj, dict)
-                    and obj.get("tool") in AgentOrchestrator._VALID_TOOLS
-                ):
-                    return obj
-                pos = idx + 1
-            except json.JSONDecodeError:
-                pos = idx + 1
-        return None
+                for chunk in llm.stream(messages):
+                    chunks.append(chunk)
+                    if chunk.content:
+                        has_text_content = True
+                        yield ("token", chunk.content)
+            except Exception as e:
+                logger.error(f"LLM stream failed at step {step}: {e}")
+                yield ("token", f"I encountered an error: {e}")
+                yield ("citations", all_citations)
+                return
 
-    # ── Tool Execution ───────────────────────────────────────────────
+            if has_text_content:
+                # Text response = final answer, we already yielded tokens
+                yield ("citations", all_citations)
+                return
 
-    def _execute_tool(
-        self, name: str, args: Dict
-    ) -> Tuple[str, List[Dict], List[Dict]]:
-        """
-        Execute a registered tool.
+            if not chunks:
+                yield ("citations", all_citations)
+                return
 
-        Returns:
-            (observation_text, citations_list, memory_writes_list)
-        """
-        fn = self.tools.get(name)
-        if fn is None:
-            return (f"Error: tool '{name}' is not registered.", [], [])
+            # Aggregate chunks to reconstruct full AI message with tool_calls
+            full_response = chunks[0]
+            for c in chunks[1:]:
+                full_response = full_response + c
+
+            if not getattr(full_response, "tool_calls", None):
+                # No tool calls and no content — empty response
+                content = getattr(full_response, "content", "") or ""
+                if content:
+                    yield ("token", content)
+                yield ("citations", all_citations)
+                return
+
+            # Execute tool calls
+            messages.append(full_response)
+
+            for tc in full_response.tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_id = tc["id"]
+
+                yield ("tool", {"tool": tool_name, "args": tool_args})
+                logger.info(f"Stream tool call: {tool_name}({tool_args})")
+
+                try:
+                    tool_fn = self._tools_by_name.get(tool_name)
+                    if tool_fn is None:
+                        obs = f"Error: tool '{tool_name}' not found"
+                    else:
+                        result = tool_fn.invoke(tool_args)
+                        obs, cits, _ = _postprocess_tool_result(tool_name, tool_args, result)
+                        all_citations.extend(cits)
+                except Exception as e:
+                    logger.error(f"Tool {tool_name} failed: {e}")
+                    obs = f"Tool error: {e}"
+
+                messages.append(ToolMessage(content=obs, tool_call_id=tool_id))
+
+            if step < MAX_AGENT_STEPS - 1:
+                yield ("status", "Processing results...")
+
+        # Exhausted steps — force final answer (no tools bound)
+        yield ("status", "Generating final answer...")
+        llm_no_tools = self._get_llm(model)
+        messages.append(
+            HumanMessage(content="Provide your final answer now based on the tool results above.")
+        )
 
         try:
-            result = fn(**args)
-
-            # Tool-specific post-processing
-            if name == "search_documents":
-                return self._format_search_result(result)
-            elif name == "get_weather":
-                return (json.dumps(result, indent=2, default=str), [], [])
-            elif name == "execute_code":
-                return self._format_code_result(result)
-            elif name == "write_memory":
-                mem = [{"target": args.get("target"), "summary": args.get("summary")}]
-                return (json.dumps(result, default=str), [], mem)
-            else:
-                return (str(result), [], [])
-
+            for chunk in llm_no_tools.stream(messages):
+                if chunk.content:
+                    yield ("token", chunk.content)
         except Exception as e:
-            logger.error(f"Tool {name} failed: {e}")
-            return (f"Tool error: {e}", [], [])
+            logger.error(f"Final stream failed: {e}")
+            yield ("token", f"I encountered an error: {e}")
 
-    @staticmethod
-    def _format_search_result(result: Dict) -> Tuple[str, List[Dict], List[Dict]]:
-        """Format RAG search results into a textual observation + citations."""
-        if not result.get("passages"):
-            return ("No relevant passages found in the uploaded documents.", [], [])
+        yield ("citations", all_citations)
 
-        lines = []
-        citations = []
-        for i, passage in enumerate(result["passages"], 1):
-            src = passage.get("source", "unknown")
-            loc = passage.get("locator", "")
-            text = passage.get("text", "")
-            lines.append(f"[{i}] {src}, {loc}:\n{text}\n")
-            citations.append(
-                {
-                    "source": src,
-                    "locator": loc,
-                    "snippet": text[:300],
-                }
-            )
-        return ("\n".join(lines), citations, [])
 
-    @staticmethod
-    def _format_code_result(result: Dict) -> Tuple[str, List[Dict], List[Dict]]:
-        """Format sandbox execution result."""
-        if result.get("success"):
-            out = result.get("output", "")
-            res = result.get("result")
-            text = f"Execution successful.\nOutput:\n{out}"
-            if res is not None:
-                text += f"\nResult: {res}"
-            return (text, [], [])
-        else:
-            return (f"Execution failed: {result.get('error', 'unknown')}", [], [])
+# ── Helper Functions ─────────────────────────────────────────────
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> blocks from LLM output."""
+    return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+
+
+def _build_messages(
+    user_query: str,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+) -> List[BaseMessage]:
+    """Build the message list for the LLM."""
+    messages: List[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
+
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role in ("assistant", "agent"):
+                messages.append(AIMessage(content=content))
+
+    messages.append(HumanMessage(content=user_query))
+    return messages
+
+
+def _postprocess_tool_result(
+    tool_name: str, tool_args: Dict, result: Any
+) -> Tuple[str, List[Dict], List[Dict]]:
+    """
+    Post-process tool results into (observation_text, citations, memory_writes).
+    """
+    if tool_name == "search_documents":
+        return _format_search_result(result)
+    elif tool_name == "get_weather":
+        return (json.dumps(result, indent=2, default=str), [], [])
+    elif tool_name == "execute_code":
+        return _format_code_result(result)
+    elif tool_name == "write_memory":
+        mem = [{"target": tool_args.get("target"), "summary": tool_args.get("summary")}]
+        return (json.dumps(result, default=str), [], mem)
+    else:
+        return (str(result), [], [])
+
+
+def _format_search_result(result: Any) -> Tuple[str, List[Dict], List[Dict]]:
+    """Format RAG search results into observation text + citations."""
+    # Handle both dict and string results
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return (str(result), [], [])
+
+    if not isinstance(result, dict) or not result.get("passages"):
+        return ("No relevant passages found in the uploaded documents.", [], [])
+
+    lines = []
+    citations = []
+    for i, passage in enumerate(result["passages"], 1):
+        src = passage.get("source", "unknown")
+        loc = passage.get("locator", "")
+        text = passage.get("text", "")
+        lines.append(f"[{i}] {src}, {loc}:\n{text}\n")
+        citations.append({"source": src, "locator": loc, "snippet": text[:300]})
+
+    return ("\n".join(lines), citations, [])
+
+
+def _format_code_result(result: Any) -> Tuple[str, List[Dict], List[Dict]]:
+    """Format sandbox execution result."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return (str(result), [], [])
+
+    if not isinstance(result, dict):
+        return (str(result), [], [])
+
+    if result.get("success"):
+        out = result.get("output", "")
+        res = result.get("result")
+        text = f"Execution successful.\nOutput:\n{out}"
+        if res is not None:
+            text += f"\nResult: {res}"
+        return (text, [], [])
+    else:
+        return (f"Execution failed: {result.get('error', 'unknown')}", [], [])

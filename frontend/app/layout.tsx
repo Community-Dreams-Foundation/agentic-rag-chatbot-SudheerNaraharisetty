@@ -19,7 +19,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${jetbrains.className} antialiased bg-black text-zinc-300 overflow-hidden`}>
+      <body className={`${jetbrains.className} antialiased bg-background text-foreground overflow-hidden`}>
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

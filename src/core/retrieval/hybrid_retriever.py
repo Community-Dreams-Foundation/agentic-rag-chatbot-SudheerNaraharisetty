@@ -110,12 +110,17 @@ class HybridRetriever:
         if not (len(embeddings) == len(texts) == len(metadata_list)):
             raise ValueError("All inputs must have the same length")
 
+        # Include text in metadata so FAISS engine stores it in SQLite
+        metadata_with_text = [
+            dict(m, text=text) for m, text in zip(metadata_list, texts)
+        ]
+
         # Add to FAISS (returns authoritative IDs)
-        faiss_ids = self.faiss_engine.add_documents(embeddings, metadata_list)
+        faiss_ids = self.faiss_engine.add_documents(embeddings, metadata_with_text)
 
         # Enrich metadata with FAISS IDs so BM25 results map correctly
         enriched_metadata = [
-            dict(m, id=fid) for m, fid in zip(metadata_list, faiss_ids)
+            dict(m, id=fid) for m, fid in zip(metadata_with_text, faiss_ids)
         ]
 
         self.corpus.extend(texts)

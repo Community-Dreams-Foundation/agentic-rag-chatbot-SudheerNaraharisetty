@@ -577,7 +577,7 @@ os.system("echo blocked")
         """Build system info section."""
         self.results["system_info"].update(
             {
-                "llm": "Kimi K2.5 via OpenRouter (moonshotai/kimi-k2.5)",
+                "llm": "Llama 3.3 70B via OpenRouter (meta-llama/llama-3.3-70b-instruct)",
                 "embedding": "qwen/qwen3-embedding-8b via OpenRouter (4096-dim)",
                 "embedding_fallback": "nvidia/llama-3.2-nv-embedqa-1b-v2 (2048-dim)",
                 "reranker": "nvidia/llama-3.2-nv-rerankqa-1b-v2 (8192 token context)",
@@ -586,6 +586,7 @@ os.system("echo blocked")
                 "hybrid_search": True,
                 "memory_system": True,
                 "sandbox": True,
+                "agent_framework": "LangGraph StateGraph with native function calling",
                 "fallback_llm": "Groq Llama 3.3 70B (llama-3.3-70b-versatile)",
                 "reranking": True,
             }

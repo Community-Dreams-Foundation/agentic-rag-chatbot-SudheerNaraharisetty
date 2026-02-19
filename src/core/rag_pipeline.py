@@ -1,7 +1,7 @@
 """
 RAG Pipeline: End-to-end document ingestion, retrieval, and agent-driven Q&A.
 Integrates hybrid retrieval, citation management, memory enrichment,
-and the agentic orchestrator for autonomous tool selection.
+and the LangGraph-powered agentic orchestrator with native function calling.
 """
 
 import logging
@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Generator
 from pathlib import Path
 
 import numpy as np
+from langchain_core.tools import tool
 
 from src.core.config import get_settings
 from src.core.llm.client import LLMClient
@@ -25,10 +26,11 @@ logger = logging.getLogger(__name__)
 
 class RAGPipeline:
     """
-    End-to-end RAG pipeline with agentic orchestration.
+    End-to-end RAG pipeline with LangGraph agentic orchestration.
 
     The agent autonomously decides whether to search documents, fetch weather,
-    execute code, or write memory — no keyword routing needed.
+    execute code, or write memory using native function calling — no keyword
+    routing or manual JSON parsing needed.
     """
 
     def __init__(
@@ -46,73 +48,88 @@ class RAGPipeline:
         self.doc_processor = DocumentProcessor()
         self.sandbox = SafeSandbox()
 
-        # Build the agent with all tools registered
-        self.agent = AgentOrchestrator(llm_client=self.llm_client)
-        self._register_tools()
+        # Build LangChain tools and LangGraph agent
+        tools = self._create_tools()
+        self.agent = AgentOrchestrator(llm_client=self.llm_client, tools=tools)
 
-    def _register_tools(self):
-        """Register all tools the agent can invoke."""
-        self.agent.register_tool("search_documents", self._search_documents_tool)
-        self.agent.register_tool("get_weather", get_weather_for_agent)
-        self.agent.register_tool("execute_code", self._execute_code_tool)
-        self.agent.register_tool(
-            "write_memory", self.memory_manager.write_memory_from_agent
-        )
+    # ── Tool Definitions (LangChain @tool) ───────────────────────
 
-    # ── Tool Implementations ────────────────────────────────────────
-
-    def _search_documents_tool(self, query: str) -> Dict[str, Any]:
+    def _create_tools(self):
         """
-        Search uploaded documents using hybrid retrieval.
-        Called by the agent when it needs to answer questions from documents.
+        Create LangChain tool objects for the agent.
 
-        Uses input_type="query" for the search embedding (optimized for queries).
+        Each tool is a closure that captures the pipeline's components.
+        The @tool decorator generates Pydantic schemas from type hints
+        and docstrings — the LLM uses these for native function calling.
         """
-        try:
-            # Get query embedding with "query" input type
-            query_embedding = self.llm_client.get_embeddings(
-                [query], input_type="query"
-            )[0]
+        retriever = self.retriever
+        llm_client = self.llm_client
+        sandbox = self.sandbox
+        memory_manager = self.memory_manager
 
-            # Hybrid retrieval (FAISS semantic + BM25 keyword + RRF fusion)
-            retrieved_docs = self.retriever.search(
-                query=query,
-                query_embedding=np.array(query_embedding),
-                k=5,
-            )
+        @tool
+        def search_documents(query: str) -> dict:
+            """Search uploaded documents using hybrid retrieval (FAISS semantic + BM25 keyword + RRF fusion + reranking). Use this tool for any question about uploaded documents, PDFs, or files."""
+            try:
+                query_embedding = llm_client.get_embeddings(
+                    [query], input_type="query"
+                )[0]
 
-            if not retrieved_docs:
-                return {"passages": []}
-
-            # Format results for the agent
-            passages = []
-            for metadata, score, source_type in retrieved_docs:
-                locator = f"page {metadata.page_num}"
-                if metadata.chunk_index > 0:
-                    locator += f", chunk {metadata.chunk_index}"
-
-                passages.append(
-                    {
-                        "source": metadata.filename,
-                        "locator": locator,
-                        "text": metadata.text,
-                        "score": round(score, 4),
-                        "retrieval_type": source_type,
-                    }
+                retrieved_docs = retriever.search(
+                    query=query,
+                    query_embedding=np.array(query_embedding),
+                    k=5,
                 )
 
-            return {"passages": passages}
+                if not retrieved_docs:
+                    return {"passages": []}
 
-        except Exception as e:
-            logger.error(f"Document search failed: {e}")
-            return {"passages": [], "error": str(e)}
+                passages = []
+                for metadata, score, source_type in retrieved_docs:
+                    locator = f"page {metadata.page_num}"
+                    if metadata.chunk_index > 0:
+                        locator += f", chunk {metadata.chunk_index}"
 
-    def _execute_code_tool(self, code: str) -> Dict[str, Any]:
-        """
-        Execute Python code in the safe sandbox.
-        Called by the agent for data analysis and computation tasks.
-        """
-        return self.sandbox.execute(code)
+                    passages.append(
+                        {
+                            "source": metadata.filename,
+                            "locator": locator,
+                            "text": metadata.text,
+                            "score": round(score, 4),
+                            "retrieval_type": source_type,
+                        }
+                    )
+
+                return {"passages": passages}
+
+            except Exception as e:
+                logger.error(f"Document search failed: {e}")
+                return {"passages": [], "error": str(e)}
+
+        @tool
+        def get_weather(
+            location: str,
+            metric: str = "temperature_2m",
+            period: str = "current",
+        ) -> dict:
+            """Get weather data for a location. Metric options: temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m. Period options: current, yesterday, last_week, last_month."""
+            return get_weather_for_agent(
+                location=location, metric=metric, period=period
+            )
+
+        @tool
+        def execute_code(code: str) -> dict:
+            """Execute Python code in a safe sandbox for data analysis and calculations. Allowed modules: math, statistics, numpy, json, datetime, collections, itertools, functools, re, random, string, decimal, fractions, operator, textwrap, csv."""
+            return sandbox.execute(code)
+
+        @tool
+        def write_memory(target: str, summary: str) -> dict:
+            """Write a fact to persistent memory. Use target='USER' for personal facts (role, preferences) or target='COMPANY' for organizational knowledge (processes, tools)."""
+            return memory_manager.write_memory_from_agent(
+                target=target, summary=summary
+            )
+
+        return [search_documents, get_weather, execute_code, write_memory]
 
     # ── Document Ingestion ──────────────────────────────────────────
 
@@ -199,9 +216,9 @@ class RAGPipeline:
         model: str = "openrouter",
     ) -> Dict[str, Any]:
         """
-        Query the system using the agentic orchestrator.
+        Query the system using the LangGraph agentic orchestrator.
 
-        The agent autonomously decides which tools to use based on the question.
+        The agent autonomously decides which tools to use via native function calling.
         No keyword routing — the LLM decides.
 
         Args:
@@ -225,7 +242,7 @@ class RAGPipeline:
         model: str = "openrouter",
     ) -> Generator:
         """
-        Streaming query using the agentic orchestrator.
+        Streaming query using the LangGraph agentic orchestrator.
 
         Yields (event_type, data) tuples:
           - ("tool", {"tool": name, "args": args})

@@ -11,24 +11,24 @@ import { InspectorPanel } from "@/components/inspector-panel"
 
 export default function Home() {
   return (
-    <main className="h-screen w-screen bg-black overflow-hidden flex flex-col">
+    <main className="h-screen w-screen bg-background overflow-hidden flex flex-col">
       <ResizablePanelGroup direction="horizontal" className="flex-1">
         {/* Left Sidebar: System Context */}
-        <ResizablePanel defaultSize={20} minSize={15} maxSize={25} className="min-w-[250px]">
+        <ResizablePanel defaultSize={18} minSize={14} maxSize={24} className="min-w-[220px]">
           <SystemStatus />
         </ResizablePanel>
 
-        <ResizableHandle className="bg-zinc-800" />
+        <ResizableHandle className="bg-border hover:bg-orange-500/20 transition-colors" />
 
         {/* Middle Pane: Chat Interface */}
         <ResizablePanel defaultSize={50} minSize={30}>
           <ChatInterface />
         </ResizablePanel>
 
-        <ResizableHandle className="bg-zinc-800" />
+        <ResizableHandle className="bg-border hover:bg-orange-500/20 transition-colors" />
 
         {/* Right Sidebar: Inspector */}
-        <ResizablePanel defaultSize={30} minSize={20} className="min-w-[300px]">
+        <ResizablePanel defaultSize={32} minSize={20} className="min-w-[280px]">
           <InspectorPanel />
         </ResizablePanel>
       </ResizablePanelGroup>

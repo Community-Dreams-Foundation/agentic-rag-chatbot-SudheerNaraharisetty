@@ -11,12 +11,27 @@ export interface ToolCall {
     args: Record<string, unknown>;
 }
 
+export interface ThinkingStep {
+    type: 'tool' | 'status';
+    content: string;
+    timestamp: number;
+}
+
 export interface ChatMessage {
     role: 'user' | 'agent' | 'system';
     content: string;
     isThinking?: boolean;
     citations?: Citation[];
     toolCalls?: ToolCall[];
+    thinkingSteps?: ThinkingStep[];
+    responseTime?: number; // milliseconds
+    startTime?: number;
+}
+
+export interface UploadedFile {
+    name: string;
+    chunks: number;
+    uploadedAt: number;
 }
 
 interface AppState {
@@ -30,14 +45,14 @@ interface AppState {
     // System Context
     isConnected: boolean;
     setIsConnected: (status: boolean) => void;
-    files: string[];
-    addFile: (filename: string) => void;
+    files: UploadedFile[];
+    addFile: (file: UploadedFile) => void;
     tokensUsed: number;
     addTokens: (count: number) => void;
 
     // Inspector State
-    activeTab: 'trace' | 'source' | 'visual';
-    setActiveTab: (tab: 'trace' | 'source' | 'visual') => void;
+    activeTab: 'trace' | 'source' | 'memory' | 'tools';
+    setActiveTab: (tab: 'trace' | 'source' | 'memory' | 'tools') => void;
 
     // Real-time Logs
     traceLogs: string[];
@@ -46,6 +61,22 @@ interface AppState {
     // Model selection
     model: 'openrouter' | 'groq';
     setModel: (model: 'openrouter' | 'groq') => void;
+
+    // Memory content (for judges)
+    userMemory: string;
+    companyMemory: string;
+    setMemory: (user: string, company: string) => void;
+
+    // Active source for PDF viewer
+    activeSource: string | null;
+    activeCitations: Citation[];
+    setActiveSource: (source: string | null, citations?: Citation[]) => void;
+
+    // Upload state
+    isUploading: boolean;
+    setIsUploading: (is: boolean) => void;
+    uploadProgress: string;
+    setUploadProgress: (msg: string) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -65,8 +96,8 @@ export const useAppStore = create<AppState>((set) => ({
     isConnected: false,
     setIsConnected: (status) => set({ isConnected: status }),
     files: [],
-    addFile: (filename) => set((state) => ({
-        files: state.files.includes(filename) ? state.files : [...state.files, filename]
+    addFile: (file) => set((state) => ({
+        files: state.files.some(f => f.name === file.name) ? state.files : [...state.files, file]
     })),
     tokensUsed: 0,
     addTokens: (count) => set((state) => ({ tokensUsed: state.tokensUsed + count })),
@@ -81,4 +112,17 @@ export const useAppStore = create<AppState>((set) => ({
 
     model: 'openrouter',
     setModel: (model) => set({ model }),
+
+    userMemory: '',
+    companyMemory: '',
+    setMemory: (user, company) => set({ userMemory: user, companyMemory: company }),
+
+    activeSource: null,
+    activeCitations: [],
+    setActiveSource: (source, citations = []) => set({ activeSource: source, activeCitations: citations }),
+
+    isUploading: false,
+    setIsUploading: (is) => set({ isUploading: is }),
+    uploadProgress: '',
+    setUploadProgress: (msg) => set({ uploadProgress: msg }),
 }));

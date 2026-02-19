@@ -22,11 +22,10 @@ install:
 	@echo "Installing frontend dependencies..."
 	cd frontend && npm install
 
-# Run full stack (backend + frontend)
+# Run full stack (backend + frontend) — cross-platform via Node.js
 run:
 	@echo "Starting Agentic RAG System..."
-	@echo "Backend: http://localhost:8000 | Frontend: http://localhost:3000"
-	@bash start_app.sh 2>/dev/null || (echo "Use 'start_app.bat' on Windows or run manually:" && echo "  Terminal 1: python -m uvicorn src.api.server:app --reload --port 8000" && echo "  Terminal 2: cd frontend && npm run dev")
+	@node start.js 2>/dev/null || (echo "Fallback: run manually in two terminals:" && echo "  Terminal 1: python -m uvicorn src.api.server:app --reload --port 8000" && echo "  Terminal 2: cd frontend && npm run dev")
 
 # Run backend API only
 run-api:
