@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     # Groq Configuration (Fallback LLM)
     groq_api_key: Optional[str] = Field(default=None, alias="GROQ_API_KEY")
-    groq_model: str = Field(default="llama-3.1-70b-versatile", alias="GROQ_MODEL")
+    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
 
     # Active Embedding Configuration (computed from available keys)
     @property

@@ -154,13 +154,13 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
 
-        # LLM Provider Selection
+        # LLM Provider — Groq default for speed (tool routing always uses Groq)
         llm_provider = st.selectbox(
-            "LLM Provider",
-            ["OpenRouter (Kimi K2.5)", "Groq (Llama 3.1)"],
+            "Synthesis Model",
+            ["Groq (Llama 3.3 70B) — Fast", "OpenRouter (Kimi K2.5) — Quality"],
             index=0,
         )
-        model = "openrouter" if "OpenRouter" in llm_provider else "groq"
+        model = "groq" if "Groq" in llm_provider else "openrouter"
 
         enable_memory = st.checkbox("Memory System", value=True)
         enable_streaming = st.checkbox("Streaming", value=True)
@@ -261,9 +261,9 @@ def main():
 
             # Process with agent
             with st.chat_message("assistant"):
-                # Build chat history for agent context
+                # Build chat history EXCLUDING the current message (agent adds it)
                 chat_history = []
-                for msg in st.session_state.messages[-6:]:
+                for msg in st.session_state.messages[-7:-1]:
                     chat_history.append(
                         {
                             "role": msg["role"],

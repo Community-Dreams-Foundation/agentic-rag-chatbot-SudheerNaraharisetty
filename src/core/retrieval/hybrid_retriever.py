@@ -212,23 +212,30 @@ class HybridRetriever:
         semantic_ids = {r[0] for r in semantic_results}
         keyword_ids = {r[0] for r in keyword_results}
 
+        # ── Helper: batch-fetch rows from SQLite ──
+        all_candidate_ids = [doc_id for doc_id, _ in fused]
+        rows_by_id: Dict[int, tuple] = {}
+        if all_candidate_ids:
+            conn = sqlite3.connect(self.faiss_engine.db_path)
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _ in all_candidate_ids)
+            cursor.execute(
+                f"SELECT id, filename, page_num, chunk_index, text, source, file_type "
+                f"FROM chunks WHERE id IN ({placeholders})",
+                all_candidate_ids,
+            )
+            for row in cursor.fetchall():
+                rows_by_id[row[0]] = row
+            conn.close()
+
         # ── Stage 3: NVIDIA Reranking (if enabled and available) ──
         reranked_order = None
         if enable_reranking and self.reranker and len(fused) > 1:
             try:
-                # Build passages for reranker
-                conn = sqlite3.connect(self.faiss_engine.db_path)
-                cursor = conn.cursor()
-
                 passages = []
                 doc_ids = []
                 for doc_id, rrf_score in fused:
-                    cursor.execute(
-                        "SELECT id, filename, page_num, chunk_index, text, source, file_type "
-                        "FROM chunks WHERE id=?",
-                        (doc_id,),
-                    )
-                    row = cursor.fetchone()
+                    row = rows_by_id.get(doc_id)
                     if row:
                         passages.append(
                             {
@@ -244,7 +251,6 @@ class HybridRetriever:
                             }
                         )
                         doc_ids.append(doc_id)
-                conn.close()
 
                 if passages:
                     rerank_results = self.reranker.rerank(
@@ -252,7 +258,6 @@ class HybridRetriever:
                         passages=passages,
                         top_k=min(k, len(passages)),
                     )
-                    # Map reranker results back to doc_ids
                     reranked_order = []
                     for result in rerank_results:
                         original_idx = result.index
@@ -264,23 +269,20 @@ class HybridRetriever:
                                     passages[original_idx]["metadata"],
                                 )
                             )
-                    logger.info(
-                        f"Reranked {len(passages)} candidates, top logit="
-                        f"{reranked_order[0][1]:.2f}"
-                        if reranked_order
-                        else ""
-                    )
+                    if reranked_order:
+                        logger.info(
+                            f"Reranked {len(passages)} candidates, "
+                            f"top logit={reranked_order[0][1]:.2f}"
+                        )
             except Exception as e:
                 logger.warning(f"Reranking failed, falling back to RRF: {e}")
                 reranked_order = None
 
-        # ── Stage 4: Build final results ──
+        # ── Stage 4: Build final results (no extra DB queries) ──
         results = []
 
         if reranked_order:
-            # Use reranked results with logit scores
-            for doc_id, logit, metadata in reranked_order[:k]:
-                # Determine source type
+            for doc_id, logit, _ in reranked_order[:k]:
                 if doc_id in semantic_ids and doc_id in keyword_ids:
                     source_type = "hybrid_reranked"
                 elif doc_id in semantic_ids:
@@ -288,52 +290,28 @@ class HybridRetriever:
                 else:
                     source_type = "keyword_reranked"
 
-                # Fetch full text from DB
-                conn = sqlite3.connect(self.faiss_engine.db_path)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT id, filename, page_num, chunk_index, text, source, file_type "
-                    "FROM chunks WHERE id=?",
-                    (doc_id,),
-                )
-                row = cursor.fetchone()
-                conn.close()
-
+                row = rows_by_id.get(doc_id)
                 if row:
-                    metadata_obj = DocumentMetadata(
-                        id=row[0],
-                        filename=row[1],
-                        page_num=row[2],
-                        chunk_index=row[3],
-                        text=row[4],
-                        source=row[5],
-                        file_type=row[6],
+                    results.append(
+                        (
+                            DocumentMetadata(
+                                id=row[0],
+                                filename=row[1],
+                                page_num=row[2],
+                                chunk_index=row[3],
+                                text=row[4],
+                                source=row[5],
+                                file_type=row[6],
+                            ),
+                            logit,
+                            source_type,
+                        )
                     )
-                    results.append((metadata_obj, logit, source_type))
         else:
-            # Fallback to RRF results (no reranking)
-            conn = sqlite3.connect(self.faiss_engine.db_path)
-            cursor = conn.cursor()
-
             for doc_id, rrf_score in fused[:k]:
-                cursor.execute(
-                    "SELECT id, filename, page_num, chunk_index, text, source, file_type "
-                    "FROM chunks WHERE id=?",
-                    (doc_id,),
-                )
-                row = cursor.fetchone()
+                row = rows_by_id.get(doc_id)
                 if not row:
                     continue
-
-                metadata = DocumentMetadata(
-                    id=row[0],
-                    filename=row[1],
-                    page_num=row[2],
-                    chunk_index=row[3],
-                    text=row[4],
-                    source=row[5],
-                    file_type=row[6],
-                )
 
                 if doc_id in semantic_ids and doc_id in keyword_ids:
                     source_type = "hybrid"
@@ -342,9 +320,21 @@ class HybridRetriever:
                 else:
                     source_type = "keyword"
 
-                results.append((metadata, rrf_score, source_type))
-
-            conn.close()
+                results.append(
+                    (
+                        DocumentMetadata(
+                            id=row[0],
+                            filename=row[1],
+                            page_num=row[2],
+                            chunk_index=row[3],
+                            text=row[4],
+                            source=row[5],
+                            file_type=row[6],
+                        ),
+                        rrf_score,
+                        source_type,
+                    )
+                )
 
         return results
 

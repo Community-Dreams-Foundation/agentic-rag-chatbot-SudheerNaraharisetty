@@ -151,12 +151,25 @@ class NVIDIAReranker:
                 for i, p in enumerate(passages[:top_k])
             ]
 
+        # Filter out empty passages — NVIDIA API returns 400 on empty text
+        valid_indices = []
+        valid_passages = []
+        for i, p in enumerate(passages):
+            text = (p.get("text") or "").strip()
+            if text:
+                valid_indices.append(i)
+                valid_passages.append(p)
+
+        if not valid_passages:
+            logger.warning("All passages empty after filtering, skipping rerank")
+            return []
+
         self._throttle()
 
         payload = {
             "model": self.model,
             "query": {"text": query},
-            "passages": [{"text": p.get("text", "")} for p in passages],
+            "passages": [{"text": p.get("text", "")} for p in valid_passages],
             "truncate": truncate,
         }
 
@@ -199,12 +212,18 @@ class NVIDIAReranker:
 
         results = []
         for ranking in rankings[:top_k]:
-            idx = ranking.get("index", 0)
+            filtered_idx = ranking.get("index", 0)
             logit = ranking.get("logit", 0.0)
-            passage = passages[idx] if idx < len(passages) else {}
+            # Map back to original passage index
+            original_idx = (
+                valid_indices[filtered_idx]
+                if filtered_idx < len(valid_indices)
+                else filtered_idx
+            )
+            passage = passages[original_idx] if original_idx < len(passages) else {}
             results.append(
                 RerankResult(
-                    index=idx,
+                    index=original_idx,
                     logit=logit,
                     text=passage.get("text", ""),
                     metadata=passage.get("metadata"),

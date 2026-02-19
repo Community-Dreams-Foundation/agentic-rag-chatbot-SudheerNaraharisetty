@@ -276,7 +276,7 @@ class SafeSandbox:
             "oct": oct,
             "ord": ord,
             "pow": pow,
-            "print": print,
+            "print": lambda *args, **kwargs: print(*args, file=stdout_buffer, **kwargs),
             "range": range,
             "repr": repr,
             "reversed": reversed,

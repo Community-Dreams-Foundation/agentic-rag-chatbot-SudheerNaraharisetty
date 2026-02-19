@@ -147,6 +147,17 @@ class LLMClient:
         if not self.openrouter_client:
             raise ValueError("OpenRouter client not available. Set OPENROUTER_API_KEY.")
 
+        # Filter out unsupported kwargs for OpenRouter
+        # 'thinking' is NVIDIA-specific, not supported by OpenRouter
+        supported_params = {
+            "top_p",
+            "top_k",
+            "frequency_penalty",
+            "presence_penalty",
+            "stop",
+        }
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in supported_params}
+
         # No RPM throttling for OpenRouter - it's credit-based
         completion = self.openrouter_client.chat.completions.create(
             model=self.openrouter_model,
@@ -154,7 +165,7 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             stream=stream,
-            **kwargs,
+            **filtered_kwargs,
         )
 
         if stream:
