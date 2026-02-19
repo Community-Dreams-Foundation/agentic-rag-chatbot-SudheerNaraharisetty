@@ -76,4 +76,5 @@ frontend/dist/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynbmanual4me.md
+*.ipynb
+manual4me.md

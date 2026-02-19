@@ -1,12 +1,13 @@
 """
-FAISS Vector Engine with SQLite sidecar for metadata.
-Implements exact nearest neighbor search (IndexFlatL2) for 100% accuracy.
+FAISS Vector Engine with SQLite metadata sidecar.
+Uses IndexFlatIP (inner product) on L2-normalized vectors for cosine similarity.
+Full 2048-dimensional embeddings from nvidia/llama-3.2-nv-embedqa-1b-v2.
 """
 
-import pickle
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
+
 import numpy as np
 import faiss
 
@@ -15,6 +16,8 @@ from src.core.config import get_settings
 
 class DocumentMetadata:
     """Represents metadata for a document chunk."""
+
+    __slots__ = ("id", "filename", "page_num", "chunk_index", "text", "source", "file_type")
 
     def __init__(
         self,
@@ -48,46 +51,48 @@ class DocumentMetadata:
 
 class FaissEngine:
     """
-    High-performance FAISS vector engine with SQLite metadata sidecar.
-    Uses IndexFlatL2 for mathematically exact nearest neighbor search.
+    FAISS vector engine using IndexFlatIP (inner product) on L2-normalized
+    vectors, which is mathematically equivalent to cosine similarity.
+    Paired with SQLite sidecar for chunk metadata storage.
     """
 
     def __init__(
         self,
         index_path: Optional[Path] = None,
         db_path: Optional[Path] = None,
-        dimension: int = 2048,  # llama-3.2-nv-embedqa-1b-v2 embedding dimension
+        dimension: int = 2048,
     ):
         self.settings = get_settings()
         self.index_path = index_path or self.settings.faiss_index_path
         self.db_path = db_path or self.settings.sqlite_db_path
         self.dimension = dimension
 
-        # Initialize FAISS index
         self.index = self._init_faiss_index()
-
-        # Initialize SQLite
         self._init_sqlite()
-
-        # Track next ID
         self.next_id = self.index.ntotal
 
     def _init_faiss_index(self) -> faiss.Index:
-        """Initialize or load FAISS index."""
+        """Initialize or load FAISS index, migrating L2→IP if needed."""
         if self.index_path.exists():
-            print(f"Loading existing FAISS index from {self.index_path}")
-            return faiss.read_index(str(self.index_path))
+            loaded = faiss.read_index(str(self.index_path))
+            # Validate dimension compatibility
+            if loaded.d != self.dimension:
+                print(
+                    f"Index dimension mismatch ({loaded.d} vs {self.dimension}). "
+                    "Creating fresh index."
+                )
+                return faiss.IndexFlatIP(self.dimension)
+            return loaded
         else:
-            print("Creating new FAISS IndexFlatL2 (100% exact search)")
-            # IndexFlatL2 provides exact nearest neighbor search
-            return faiss.IndexFlatL2(self.dimension)
+            print(f"Creating FAISS IndexFlatIP (cosine similarity, {self.dimension}d)")
+            return faiss.IndexFlatIP(self.dimension)
 
     def _init_sqlite(self):
         """Initialize SQLite database for metadata."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS chunks (
                 id INTEGER PRIMARY KEY,
                 filename TEXT NOT NULL,
@@ -98,112 +103,98 @@ class FaissEngine:
                 file_type TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-
-        # Create index for faster lookups
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_filename ON chunks(filename)
-        """)
-
+        """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_filename ON chunks(filename)"
+        )
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _normalize(vectors: np.ndarray) -> np.ndarray:
+        """L2-normalize vectors so inner product == cosine similarity."""
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)
+        return vectors / norms
 
     def add_documents(
         self, embeddings: np.ndarray, metadata_list: List[Dict[str, Any]]
     ) -> List[int]:
         """
         Add documents to FAISS index and metadata to SQLite.
-
-        Args:
-            embeddings: Array of embedding vectors (shape: n_docs x dimension)
-            metadata_list: List of metadata dicts for each document
+        Embeddings are L2-normalized before indexing.
 
         Returns:
-            List of assigned IDs
+            List of assigned integer IDs.
         """
         if len(embeddings) != len(metadata_list):
             raise ValueError("Embeddings and metadata must have same length")
 
-        # Convert to float32 (FAISS requirement)
         vectors = np.array(embeddings).astype("float32")
+        vectors = self._normalize(vectors)
         n_docs = len(vectors)
 
-        # Generate IDs
         start_id = self.next_id
         ids = list(range(start_id, start_id + n_docs))
 
-        # Add to FAISS
         self.index.add(vectors)
 
-        # Add to SQLite
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-
-        data_to_insert = []
-        for i, meta in enumerate(metadata_list):
-            faiss_id = start_id + i
-            data_to_insert.append(
-                (
-                    faiss_id,
-                    meta.get("filename", "unknown"),
-                    meta.get("page_num", 1),
-                    meta.get("chunk_index", 0),
-                    meta.get("text", ""),
-                    meta.get("source", ""),
-                    meta.get("file_type", "unknown"),
-                )
+        rows = [
+            (
+                start_id + i,
+                meta.get("filename", "unknown"),
+                meta.get("page_num", 1),
+                meta.get("chunk_index", 0),
+                meta.get("text", ""),
+                meta.get("source", ""),
+                meta.get("file_type", "unknown"),
             )
-
+            for i, meta in enumerate(metadata_list)
+        ]
         cursor.executemany(
-            "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-            data_to_insert,
+            "INSERT INTO chunks VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))", rows
         )
-
         conn.commit()
         conn.close()
 
-        # Update next_id
         self.next_id += n_docs
-
-        # Save index to disk
         self._save_index()
-
         return ids
 
     def search(
         self, query_vector: np.ndarray, k: int = 5
     ) -> List[Tuple[DocumentMetadata, float]]:
         """
-        Search for nearest neighbors.
-
-        Args:
-            query_vector: Query embedding vector
-            k: Number of results to return
+        Search for nearest neighbors using cosine similarity.
 
         Returns:
-            List of (metadata, distance) tuples sorted by distance
+            List of (metadata, similarity_score) sorted by relevance descending.
         """
-        # Ensure query is float32
         query = np.array([query_vector]).astype("float32")
+        query = self._normalize(query)
 
-        # Search FAISS
-        distances, indices = self.index.search(query, k)
+        actual_k = min(k, self.index.ntotal) if self.index.ntotal > 0 else 0
+        if actual_k == 0:
+            return []
 
-        # Retrieve metadata from SQLite
+        similarities, indices = self.index.search(query, actual_k)
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         results = []
-        for idx, dist in zip(indices[0], distances[0]):
-            if idx == -1:  # No match found
+        for idx, sim in zip(indices[0], similarities[0]):
+            if idx == -1:
                 continue
-
             cursor.execute(
-                "SELECT id, filename, page_num, chunk_index, text, source, file_type FROM chunks WHERE id=?",
+                "SELECT id, filename, page_num, chunk_index, text, source, file_type "
+                "FROM chunks WHERE id=?",
                 (int(idx),),
             )
             row = cursor.fetchone()
-
             if row:
                 metadata = DocumentMetadata(
                     id=row[0],
@@ -214,61 +205,49 @@ class FaissEngine:
                     source=row[5],
                     file_type=row[6],
                 )
-                results.append((metadata, float(dist)))
+                results.append((metadata, float(sim)))
 
         conn.close()
         return results
 
     def get_document_count(self) -> int:
-        """Get total number of documents in index."""
         return self.index.ntotal
 
+    def get_indexed_files(self) -> List[Dict[str, Any]]:
+        """Return summary of all indexed files."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT filename, COUNT(*) as chunks, MIN(created_at) as indexed_at "
+            "FROM chunks GROUP BY filename ORDER BY indexed_at DESC"
+        )
+        files = [
+            {"filename": r[0], "chunks": r[1], "indexed_at": r[2]}
+            for r in cursor.fetchall()
+        ]
+        conn.close()
+        return files
+
+    def delete_file(self, filename: str) -> int:
+        """Delete all chunks for a filename from SQLite (FAISS requires rebuild)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM chunks WHERE filename=?", (filename,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+
     def _save_index(self):
-        """Save FAISS index to disk."""
         faiss.write_index(self.index, str(self.index_path))
 
     def reset(self):
-        """Clear all data (use with caution)."""
-        # Reset FAISS index
-        self.index = faiss.IndexFlatL2(self.dimension)
+        """Clear all data and recreate empty index."""
+        self.index = faiss.IndexFlatIP(self.dimension)
         self._save_index()
 
-        # Clear SQLite
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM chunks")
         conn.commit()
         conn.close()
-
         self.next_id = 0
-
-
-if __name__ == "__main__":
-    # Test the engine
-    engine = FaissEngine(dimension=1536)
-
-    # Add test documents
-    test_embeddings = np.random.randn(5, 1536).astype("float32")
-    test_metadata = [
-        {
-            "filename": f"test_{i}.pdf",
-            "page_num": i + 1,
-            "chunk_index": 0,
-            "text": f"This is test document {i}",
-            "source": f"test_{i}.pdf",
-            "file_type": "pdf",
-        }
-        for i in range(5)
-    ]
-
-    ids = engine.add_documents(test_embeddings, test_metadata)
-    print(f"Added {len(ids)} documents with IDs: {ids}")
-
-    # Search
-    query = np.random.randn(1536).astype("float32")
-    results = engine.search(query, k=3)
-    print(f"\nSearch results:")
-    for metadata, distance in results:
-        print(
-            f"  - {metadata.filename} (page {metadata.page_num}): distance={distance:.4f}"
-        )

@@ -239,17 +239,37 @@ These are optional enhancements. They are not required, but can earn bonus point
 
 ---
 
-## Quick Start (YOU MUST FILL THIS IN)
+## Quick Start
 
-Provide exact commands a judge can run.
+```bash
+# 1. Clone and enter the repository
+git clone <your-repo-url>
+cd agentic-rag-chatbot-SudheerNaraharisetty
 
-Example (replace with your real commands):
+# 2. Create a virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate   # Linux/Mac
+# venv\Scripts\activate    # Windows
 
-```text
-# install dependencies
-# run the app
-# open UI or run CLI
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure API keys
+cp .env.example .env
+# Edit .env and add your API keys:
+#   NVIDIA_API_KEY=nvapi-...          (required - Kimi K2.5)
+#   NVIDIA_EMBEDDING_API_KEY=nvapi-... (required - embedding model)
+#   GROQ_API_KEY=gsk-...              (optional - fallback LLM)
+
+# 5. Run the application
+streamlit run app.py
+
+# 6. Run sanity check (for judges)
+make sanity
+python scripts/verify_output.py artifacts/sanity_output.json
 ```
+
+**Requirements**: Python 3.10+, pip, internet connection for API access.
 
 ---
 

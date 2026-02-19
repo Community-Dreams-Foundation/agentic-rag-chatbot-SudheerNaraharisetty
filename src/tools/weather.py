@@ -1,16 +1,21 @@
 """
 Open-Meteo Tools: Weather data retrieval and analysis.
-Implements safe sandbox for data analysis.
+Provides NLP query parsing, geocoding, and statistical analysis.
 """
 
 import json
-from typing import Dict, Any, Optional, Tuple
+import logging
+import re
+from typing import Dict, Any, List, Optional, Tuple
 import requests
 from datetime import datetime, timedelta
+
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 from src.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class OpenMeteoClient:
@@ -23,13 +28,13 @@ class OpenMeteoClient:
 
     def geocode_location(self, location_name: str) -> Optional[Tuple[float, float]]:
         """
-        Convert location name to latitude and longitude.
+        Convert location name to (latitude, longitude).
 
         Args:
-            location_name: Name of location (e.g., "New York", "London")
+            location_name: City or place name (e.g., "New York", "London")
 
         Returns:
-            Tuple of (latitude, longitude) or None if not found
+            (latitude, longitude) tuple or None if not found
         """
         try:
             location = self.geolocator.geocode(location_name, timeout=10)
@@ -37,7 +42,7 @@ class OpenMeteoClient:
                 return (location.latitude, location.longitude)
             return None
         except (GeocoderTimedOut, GeocoderServiceError) as e:
-            print(f"Geocoding error for '{location_name}': {e}")
+            logger.warning(f"Geocoding error for '{location_name}': {e}")
             return None
 
     def get_weather(
@@ -46,20 +51,20 @@ class OpenMeteoClient:
         longitude: float,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        hourly: Optional[list] = None,
+        hourly: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Get weather data for location.
+        Get current/forecast weather data.
 
         Args:
             latitude: Location latitude
             longitude: Location longitude
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
+            start_date: Optional start date (YYYY-MM-DD)
+            end_date: Optional end date (YYYY-MM-DD)
             hourly: List of hourly variables to fetch
 
         Returns:
-            Weather data dict
+            Weather data dict from Open-Meteo
         """
         params = {
             "latitude": latitude,
@@ -73,7 +78,9 @@ class OpenMeteoClient:
         if hourly:
             params["hourly"] = ",".join(hourly)
 
-        response = requests.get(f"{self.base_url}/forecast", params=params, timeout=10)
+        response = requests.get(
+            f"{self.base_url}/forecast", params=params, timeout=10
+        )
         response.raise_for_status()
         return response.json()
 
@@ -83,20 +90,20 @@ class OpenMeteoClient:
         longitude: float,
         start_date: str,
         end_date: str,
-        daily: Optional[list] = None,
+        daily: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Get historical weather data.
+        Get historical weather data from archive API.
 
         Args:
             latitude: Location latitude
             longitude: Location longitude
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
-            daily: List of daily variables
+            daily: List of daily variables to fetch
 
         Returns:
-            Historical weather data
+            Historical weather data dict
         """
         params = {
             "latitude": latitude,
@@ -109,64 +116,102 @@ class OpenMeteoClient:
             params["daily"] = ",".join(daily)
 
         response = requests.get(
-            "https://archive-api.open-meteo.com/v1/archive", params=params, timeout=10
+            "https://archive-api.open-meteo.com/v1/archive",
+            params=params,
+            timeout=10,
         )
         response.raise_for_status()
         return response.json()
 
 
 class WeatherAnalyzer:
-    """Analyzes weather data with safe computations."""
+    """Statistical analysis engine for weather time series data."""
 
     def __init__(self):
         self.client = OpenMeteoClient()
+
+    @staticmethod
+    def _extract_time_series(
+        data: Dict[str, Any], variable: str
+    ) -> Tuple[List[Any], List[str]]:
+        """
+        Extract time series values from weather data, handling both
+        hourly and daily response formats.
+
+        Returns:
+            (values_list, times_list) — may be empty if variable not found
+        """
+        # Try hourly first (forecast API returns this)
+        hourly = data.get("hourly", {})
+        if variable in hourly:
+            values = hourly.get(variable, [])
+            times = hourly.get("time", [])
+            return values, times
+
+        # Try daily (archive/historical API returns this)
+        daily = data.get("daily", {})
+        if variable in daily:
+            values = daily.get(variable, [])
+            times = daily.get("time", [])
+            return values, times
+
+        return [], []
 
     def analyze_time_series(
         self, data: Dict[str, Any], variable: str = "temperature_2m"
     ) -> Dict[str, Any]:
         """
-        Perform time series analysis on weather data.
+        Perform statistical analysis on weather time series data.
+
+        Works with both hourly (forecast) and daily (historical) data.
 
         Args:
-            data: Weather data from Open-Meteo
-            variable: Variable to analyze
+            data: Weather data from Open-Meteo API
+            variable: Variable name to analyze
 
         Returns:
-            Analysis results
+            Analysis results dict with stats, or error message
         """
-        hourly = data.get("hourly", {})
-        values = hourly.get(variable, [])
+        values, times = self._extract_time_series(data, variable)
 
         if not values:
             return {"error": f"No data found for variable: {variable}"}
 
-        # Safe computations only
         import statistics
 
         # Filter out None values
         clean_values = [v for v in values if v is not None]
 
         if not clean_values:
-            return {"error": "No valid data points"}
+            return {"error": "No valid data points after filtering nulls"}
 
         analysis = {
+            "variable": variable,
             "count": len(clean_values),
-            "mean": statistics.mean(clean_values),
-            "median": statistics.median(clean_values),
-            "stdev": statistics.stdev(clean_values) if len(clean_values) > 1 else 0,
-            "min": min(clean_values),
-            "max": max(clean_values),
-            "range": max(clean_values) - min(clean_values),
+            "mean": round(statistics.mean(clean_values), 2),
+            "median": round(statistics.median(clean_values), 2),
+            "stdev": round(statistics.stdev(clean_values), 2) if len(clean_values) > 1 else 0,
+            "min": round(min(clean_values), 2),
+            "max": round(max(clean_values), 2),
+            "range": round(max(clean_values) - min(clean_values), 2),
         }
 
         # Volatility (coefficient of variation)
         if analysis["mean"] != 0:
-            analysis["volatility"] = analysis["stdev"] / abs(analysis["mean"])
+            analysis["volatility"] = round(
+                analysis["stdev"] / abs(analysis["mean"]), 4
+            )
 
-        # Missingness check
-        missing = len(values) - len(clean_values)
+        # Data quality — missingness check
+        total = len(values)
+        missing = total - len(clean_values)
         analysis["missing_count"] = missing
-        analysis["missing_percent"] = (missing / len(values)) * 100 if values else 0
+        analysis["missing_percent"] = round((missing / total) * 100, 2) if total else 0
+
+        # Time range
+        if times:
+            analysis["time_start"] = times[0]
+            analysis["time_end"] = times[-1]
 
         return analysis
 
@@ -177,137 +222,137 @@ class WeatherAnalyzer:
         threshold: float = 2.0,
     ) -> Dict[str, Any]:
         """
-        Detect anomalies in weather data using Z-score.
+        Detect anomalies using Z-score method.
 
         Args:
-            data: Weather data
+            data: Weather data from Open-Meteo
             variable: Variable to check
-            threshold: Z-score threshold
+            threshold: Z-score threshold for anomaly detection
 
         Returns:
             Anomaly detection results
         """
-        hourly = data.get("hourly", {})
-        values = hourly.get(variable, [])
-        times = hourly.get("time", [])
+        values, times = self._extract_time_series(data, variable)
 
         if not values:
-            return {"error": "No data"}
+            return {"error": f"No data found for variable: {variable}"}
 
         import statistics
 
         clean_values = [v for v in values if v is not None]
         if len(clean_values) < 2:
-            return {"error": "Insufficient data"}
+            return {"error": "Insufficient data points for anomaly detection"}
 
         mean = statistics.mean(clean_values)
         stdev = statistics.stdev(clean_values)
 
         if stdev == 0:
-            return {"anomalies": [], "message": "No variation in data"}
+            return {"anomalies": [], "message": "No variation in data (stdev=0)"}
 
         anomalies = []
-        for i, (value, time) in enumerate(zip(values, times)):
+        for i, value in enumerate(values):
             if value is not None:
                 z_score = (value - mean) / stdev
                 if abs(z_score) > threshold:
-                    anomalies.append(
-                        {
-                            "time": time,
-                            "value": value,
-                            "z_score": round(z_score, 2),
-                            "direction": "high" if z_score > 0 else "low",
-                        }
-                    )
+                    anomalies.append({
+                        "time": times[i] if i < len(times) else None,
+                        "value": round(value, 2),
+                        "z_score": round(z_score, 2),
+                        "direction": "high" if z_score > 0 else "low",
+                    })
 
         return {
+            "variable": variable,
             "anomaly_count": len(anomalies),
-            "anomalies": anomalies[:10],  # Limit to first 10
+            "anomalies": anomalies[:10],
             "threshold": threshold,
+            "mean": round(mean, 2),
+            "stdev": round(stdev, 2),
         }
 
     def rolling_average(
-        self, data: Dict[str, Any], variable: str = "temperature_2m", window: int = 24
+        self,
+        data: Dict[str, Any],
+        variable: str = "temperature_2m",
+        window: int = 24,
     ) -> Dict[str, Any]:
         """
-        Calculate rolling average.
+        Calculate rolling average over the time series.
 
         Args:
-            data: Weather data
+            data: Weather data from Open-Meteo
             variable: Variable to analyze
-            window: Rolling window size (hours)
+            window: Rolling window size (data points)
 
         Returns:
-            Rolling averages
+            Rolling average results
         """
-        hourly = data.get("hourly", {})
-        values = hourly.get(variable, [])
-        times = hourly.get("time", [])
+        values, times = self._extract_time_series(data, variable)
 
         if not values:
-            return {"error": "No data"}
+            return {"error": f"No data found for variable: {variable}"}
 
-        # Calculate rolling average
         rolling = []
         for i in range(len(values)):
             start = max(0, i - window + 1)
             window_values = [v for v in values[start : i + 1] if v is not None]
             if window_values:
                 avg = sum(window_values) / len(window_values)
-                rolling.append(
-                    {
-                        "time": times[i] if i < len(times) else None,
-                        "value": values[i],
-                        "rolling_avg": round(avg, 2),
-                    }
-                )
+                rolling.append({
+                    "time": times[i] if i < len(times) else None,
+                    "value": values[i],
+                    "rolling_avg": round(avg, 2),
+                })
 
-        return {"window_size": window, "rolling_averages": rolling}
+        return {
+            "variable": variable,
+            "window_size": window,
+            "data_points": len(rolling),
+            "rolling_averages": rolling[-20:],  # Last 20 for display
+        }
 
 
 class WeatherQueryParser:
-    """Parse natural language weather queries."""
+    """Parse natural language weather queries into structured API parameters."""
 
-    def __init__(self):
-        self.metric_keywords = {
-            "temperature": "temperature_2m",
-            "temp": "temperature_2m",
-            "humidity": "relative_humidity_2m",
-            "precipitation": "precipitation",
-            "rain": "precipitation",
-            "wind": "wind_speed_10m",
-            "pressure": "surface_pressure",
-        }
+    METRIC_KEYWORDS = {
+        "temperature": "temperature_2m",
+        "temp": "temperature_2m",
+        "humidity": "relative_humidity_2m",
+        "precipitation": "precipitation",
+        "rain": "precipitation",
+        "wind": "wind_speed_10m",
+        "pressure": "surface_pressure",
+    }
 
     def parse_query(self, query: str) -> Dict[str, Any]:
         """
-        Parse natural language weather query.
+        Parse a natural language weather query.
 
         Args:
-            query: Natural language query (e.g., "What's the humidity in New York last week?")
+            query: e.g., "What's the humidity in New York last week?"
 
         Returns:
             Dict with location, metric, time_period, comparison
         """
-        import re
-
         query_lower = query.lower()
 
-        # Extract location - look for "in [Location]" or "for [Location]"
+        # Extract location — look for "in [Location]" or "for [Location]"
         location = None
         location_patterns = [
-            r"in\s+([A-Za-z\s]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|$)",
-            r"for\s+([A-Za-z\s]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|$)",
+            r"in\s+([A-Za-z\s,]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|[?.]|$)",
+            r"for\s+([A-Za-z\s,]+?)(?:\s+last|\s+yesterday|\s+today|\s+now|\s+compared|[?.]|$)",
+            r"(?:weather|temperature|humidity|rain|wind)\s+(?:in|at|for)\s+([A-Za-z\s,]+?)(?:\s+last|\s+yesterday|[?.]|$)",
         ]
         for pattern in location_patterns:
             match = re.search(pattern, query_lower)
             if match:
-                location = match.group(1).strip()
+                location = match.group(1).strip().rstrip(",. ")
                 break
 
         # Extract metric
         metric = "temperature_2m"  # default
-        for keyword, api_metric in self.metric_keywords.items():
+        for keyword, api_metric in self.METRIC_KEYWORDS.items():
             if keyword in query_lower:
                 metric = api_metric
                 break
@@ -321,9 +366,11 @@ class WeatherQueryParser:
         elif "last month" in query_lower or "past month" in query_lower:
             time_period = "last_month"
 
-        # Check for comparison
+        # Check for comparison intent
         comparison = (
-            "compared" in query_lower or "vs" in query_lower or "versus" in query_lower
+            "compared" in query_lower
+            or "vs" in query_lower
+            or "versus" in query_lower
         )
 
         return {
@@ -334,15 +381,13 @@ class WeatherQueryParser:
             "original_query": query,
         }
 
-    def get_date_range(self, time_period: str) -> tuple:
+    @staticmethod
+    def get_date_range(time_period: str) -> Tuple[str, str]:
         """
-        Convert time period to date range.
-
-        Args:
-            time_period: Time period string (e.g., "last_week")
+        Convert time period keyword to (start_date, end_date) strings.
 
         Returns:
-            Tuple of (start_date, end_date) as strings (YYYY-MM-DD)
+            Tuple of (YYYY-MM-DD, YYYY-MM-DD)
         """
         today = datetime.now()
         end_date = today.strftime("%Y-%m-%d")
@@ -360,3 +405,69 @@ class WeatherQueryParser:
             start_date = end_date
 
         return (start_date, end_date)
+
+
+# ── Agent Tool Interface ──────────────────────────────────────────
+
+def get_weather_for_agent(
+    location: str,
+    metric: str = "temperature_2m",
+    period: str = "current",
+) -> Dict[str, Any]:
+    """
+    Unified weather tool for the agentic orchestrator.
+
+    Called by the agent as:
+      {"tool": "get_weather", "args": {"location": "...", "metric": "...", "period": "..."}}
+
+    Args:
+        location: City or place name (e.g., "San Francisco")
+        metric: Weather variable (temperature_2m, relative_humidity_2m, etc.)
+        period: current | yesterday | last_week | last_month
+
+    Returns:
+        Dict with location_info, analysis, and optional anomalies
+    """
+    client = OpenMeteoClient()
+    analyzer = WeatherAnalyzer()
+    parser = WeatherQueryParser()
+
+    # Geocode location
+    coords = client.geocode_location(location)
+    if not coords:
+        return {"error": f"Could not find location: '{location}'"}
+
+    lat, lon = coords
+
+    result = {
+        "location": location,
+        "latitude": round(lat, 4),
+        "longitude": round(lon, 4),
+        "metric": metric,
+        "period": period,
+    }
+
+    try:
+        if period == "current":
+            # Forecast API — hourly data
+            data = client.get_weather(lat, lon, hourly=[metric])
+            analysis = analyzer.analyze_time_series(data, variable=metric)
+            result["analysis"] = analysis
+        else:
+            # Historical API — daily data
+            start_date, end_date = parser.get_date_range(period)
+            data = client.get_historical_weather(
+                lat, lon, start_date, end_date, daily=[metric]
+            )
+            analysis = analyzer.analyze_time_series(data, variable=metric)
+            anomalies = analyzer.detect_anomalies(data, variable=metric)
+            result["analysis"] = analysis
+            result["anomalies"] = anomalies
+            result["date_range"] = {"start": start_date, "end": end_date}
+
+    except requests.RequestException as e:
+        result["error"] = f"Weather API request failed: {e}"
+    except Exception as e:
+        result["error"] = f"Weather analysis failed: {e}"
+
+    return result
