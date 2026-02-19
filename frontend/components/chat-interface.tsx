@@ -328,9 +328,9 @@ export function ChatInterface() {
     }
 
     return (
-        <div className="flex flex-col h-full bg-background relative">
-            <ScrollArea className="flex-1 p-4">
-                <div className="flex flex-col space-y-5 pb-24 max-w-3xl mx-auto">
+        <div className="flex flex-col h-full bg-background relative overflow-hidden">
+            <ScrollArea className="flex-1 min-h-0 p-4">
+                <div className="flex flex-col space-y-5 pb-4 max-w-3xl mx-auto">
                     {/* Welcome */}
                     {messages.length === 0 && (
                         <div className="text-center py-20 space-y-4">
