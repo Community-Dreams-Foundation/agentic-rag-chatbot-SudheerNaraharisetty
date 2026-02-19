@@ -1,11 +1,20 @@
 """
-LLM Client: Unified interface for NVIDIA NIM (Kimi K2.5) and Groq (fallback).
-Implements batched embeddings, rate-limit throttling, and automatic failover.
+LLM Client: Unified interface for OpenRouter (primary), NVIDIA NIM (embeddings fallback), and Groq (LLM fallback).
+
+Provider Priority:
+  - LLM: OpenRouter (Kimi K2.5) → Groq (Llama 3.1)
+  - Embeddings: OpenRouter (Qwen3 8B) → NVIDIA NIM (llama-3.2-nv-embedqa)
+
+Key Features:
+  - No RPM rate limiting for OpenRouter (credit-based)
+  - RPM throttling for NVIDIA NIM fallback only
+  - Automatic provider failover
+  - Streaming support
 """
 
-import time
 import logging
-from typing import Generator, Dict, Any, Optional, List
+import time
+from typing import Any, Dict, Generator, List, Optional
 
 import openai
 from groq import Groq
@@ -24,46 +33,51 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """
     Unified LLM client with:
-    - Kimi K2.5 thinking mode via NVIDIA NIM (primary)
-    - Groq Llama 3.1 auto-fallback on NVIDIA failure
-    - Batched embedding with throttle to respect NIM 40 RPM limit
-    - Separate embedding API key support
+    - OpenRouter (primary): Kimi K2.5 + Qwen3 Embedding 8B
+    - NVIDIA NIM (fallback): Embeddings only
+    - Groq (fallback): LLM only
+
+    OpenRouter is credit-based (no RPM limits), NVIDIA NIM has 40 RPM limit.
     """
 
     def __init__(self):
         self.settings = get_settings()
 
-        # Primary: NVIDIA NIM client for Kimi K2.5
-        self.nvidia_client = openai.OpenAI(
-            base_url=self.settings.nvidia_base_url,
-            api_key=self.settings.nvidia_api_key,
-        )
-        self.nvidia_model = self.settings.nvidia_model
+        # Primary: OpenRouter client
+        self.openrouter_client: Optional[openai.OpenAI] = None
+        if self.settings.openrouter_api_key:
+            self.openrouter_client = openai.OpenAI(
+                base_url=self.settings.openrouter_base_url,
+                api_key=self.settings.openrouter_api_key,
+            )
+            self.openrouter_model = self.settings.openrouter_model
+            self.openrouter_embedding_model = self.settings.openrouter_embedding_model
+            logger.info("OpenRouter client initialized")
 
-        # Embedding client (separate key for dedicated quota)
-        self.embedding_client = openai.OpenAI(
-            base_url=self.settings.nvidia_base_url,
-            api_key=(
-                self.settings.nvidia_embedding_api_key
-                or self.settings.nvidia_api_key
-            ),
-        )
-        self.embedding_model = self.settings.embedding_model
-        self.embedding_dimension = self.settings.embedding_dimension
+        # Fallback: NVIDIA NIM client for embeddings
+        self.nvidia_client: Optional[openai.OpenAI] = None
+        if self.settings.nvidia_api_key:
+            self.nvidia_client = openai.OpenAI(
+                base_url=self.settings.nvidia_base_url,
+                api_key=self.settings.nvidia_api_key,
+            )
+            self.nvidia_embedding_model = self.settings.nvidia_embedding_model
+            logger.info("NVIDIA NIM client initialized (embeddings fallback)")
 
-        # Fallback: Groq client
-        self.groq_client = None
+        # Fallback: Groq client for LLM
+        self.groq_client: Optional[Groq] = None
         if self.settings.groq_api_key:
             self.groq_client = Groq(api_key=self.settings.groq_api_key)
             self.groq_model = self.settings.groq_model
+            logger.info("Groq client initialized (LLM fallback)")
 
-        # Rate-limit tracking
+        # Rate-limit tracking (only for NVIDIA NIM fallback)
         self._request_timestamps: List[float] = []
         self._rpm_limit = self.settings.api_requests_per_minute
         self._batch_delay = self.settings.api_batch_delay_seconds
 
-    def _throttle(self):
-        """Enforce RPM rate limit by sleeping when necessary."""
+    def _throttle_nvidia(self):
+        """Enforce RPM rate limit for NVIDIA NIM only."""
         now = time.time()
         window_start = now - 60.0
         self._request_timestamps = [
@@ -72,7 +86,7 @@ class LLMClient:
         if len(self._request_timestamps) >= self._rpm_limit:
             sleep_time = 60.0 - (now - self._request_timestamps[0]) + 0.1
             if sleep_time > 0:
-                logger.info(f"Rate limit: sleeping {sleep_time:.1f}s")
+                logger.info(f"NVIDIA rate limit: sleeping {sleep_time:.1f}s")
                 time.sleep(sleep_time)
         self._request_timestamps.append(time.time())
 
@@ -81,31 +95,29 @@ class LLMClient:
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: str = "nvidia",
+        model: str = "openrouter",
         temperature: float = 0.7,
         max_tokens: int = 4096,
         stream: bool = False,
-        thinking: Optional[bool] = None,
         **kwargs,
     ) -> Any:
         """
-        Generate chat completion with automatic NVIDIA → Groq fallback.
+        Generate chat completion with automatic OpenRouter → Groq fallback.
 
         Args:
             messages: Conversation messages
-            model: "nvidia" or "groq"
-            temperature: Sampling temperature (1.0 recommended for K2.5 thinking)
+            model: "openrouter" or "groq"
+            temperature: Sampling temperature
             max_tokens: Maximum response tokens
             stream: Stream response chunks
-            thinking: Enable K2.5 thinking mode (None = auto based on temperature)
         """
-        if model == "nvidia":
+        if model == "openrouter":
             try:
-                return self._nvidia_completion(
-                    messages, temperature, max_tokens, stream, thinking, **kwargs
+                return self._openrouter_completion(
+                    messages, temperature, max_tokens, stream, **kwargs
                 )
             except Exception as e:
-                logger.warning(f"NVIDIA NIM failed ({e}), falling back to Groq")
+                logger.warning(f"OpenRouter failed ({e}), falling back to Groq")
                 if self.groq_client:
                     return self._groq_completion(
                         messages, min(temperature, 0.9), max_tokens, stream, **kwargs
@@ -118,48 +130,30 @@ class LLMClient:
         else:
             raise ValueError(f"Unknown model provider: {model}")
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError)),
-        reraise=True,
-    )
-    def _nvidia_completion(
+    def _openrouter_completion(
         self,
         messages: List[Dict[str, str]],
         temperature: float,
         max_tokens: int,
         stream: bool,
-        thinking: Optional[bool] = None,
         **kwargs,
     ):
-        """Generate completion using NVIDIA NIM Kimi K2.5."""
-        self._throttle()
+        """Generate completion using OpenRouter (Kimi K2.5)."""
+        if not self.openrouter_client:
+            raise ValueError("OpenRouter client not available. Set OPENROUTER_API_KEY.")
 
-        # Determine thinking mode: explicit flag > auto (thinking ON for high temp)
-        enable_thinking = thinking if thinking is not None else (temperature >= 0.8)
-
-        extra_body = {
-            "chat_template_kwargs": {"thinking": enable_thinking},
-        }
-
-        # K2.5 recommended params: temp=1.0/top_p=1.0 for thinking, lower for fast
-        effective_temp = temperature if not enable_thinking else max(temperature, 0.9)
-        effective_top_p = 1.0 if enable_thinking else 0.9
-
-        completion = self.nvidia_client.chat.completions.create(
-            model=self.nvidia_model,
+        # No RPM throttling for OpenRouter - it's credit-based
+        completion = self.openrouter_client.chat.completions.create(
+            model=self.openrouter_model,
             messages=messages,
-            temperature=effective_temp,
-            top_p=effective_top_p,
+            temperature=temperature,
             max_tokens=max_tokens,
             stream=stream,
-            extra_body=extra_body,
             **kwargs,
         )
 
         if stream:
-            return self._stream_nvidia_response(completion)
+            return self._stream_openai_response(completion)
         else:
             return completion.choices[0].message.content
 
@@ -188,13 +182,12 @@ class LLMClient:
         else:
             return completion.choices[0].message.content
 
-    def _stream_nvidia_response(self, completion) -> Generator[str, None, None]:
-        """Stream NVIDIA NIM response, yielding content tokens."""
+    def _stream_openai_response(self, completion) -> Generator[str, None, None]:
+        """Stream OpenAI-compatible response (OpenRouter)."""
         for chunk in completion:
             if not getattr(chunk, "choices", None):
                 continue
             delta = chunk.choices[0].delta
-            # Skip reasoning/thinking tokens — only yield final answer content
             if delta.content:
                 yield delta.content
 
@@ -204,7 +197,7 @@ class LLMClient:
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
-    # ── Embeddings with Batching & Throttling ────────────────────────
+    # ── Embeddings with Fallback ─────────────────────────────────────
 
     def get_embeddings(
         self,
@@ -212,14 +205,14 @@ class LLMClient:
         input_type: str = "query",
     ) -> List[List[float]]:
         """
-        Get embeddings with automatic batching and rate-limit throttling.
+        Get embeddings with OpenRouter (primary) → NVIDIA NIM (fallback).
 
         Args:
             texts: Texts to embed
             input_type: "query" for search queries, "passage" for documents
 
         Returns:
-            List of 2048-dim embedding vectors
+            List of embedding vectors (4096-dim for OpenRouter, 2048-dim for NVIDIA)
         """
         if not texts:
             return []
@@ -229,14 +222,34 @@ class LLMClient:
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
-            batch_embeddings = self._embed_batch(batch, input_type)
-            all_embeddings.extend(batch_embeddings)
 
-            # Throttle between batches to stay within RPM limit
+            # Try OpenRouter first
+            try:
+                batch_embeddings = self._embed_openrouter(batch)
+                all_embeddings.extend(batch_embeddings)
+            except Exception as e:
+                logger.warning(f"OpenRouter embeddings failed ({e}), trying NVIDIA NIM")
+                batch_embeddings = self._embed_nvidia(batch)
+                all_embeddings.extend(batch_embeddings)
+
+            # Throttle between batches for NVIDIA fallback
             if i + batch_size < len(texts):
                 time.sleep(self._batch_delay)
 
         return all_embeddings
+
+    def _embed_openrouter(self, texts: List[str]) -> List[List[float]]:
+        """Embed using OpenRouter (Qwen3 8B, 4096-dim)."""
+        if not self.openrouter_client:
+            raise ValueError("OpenRouter client not available")
+
+        # No RPM throttling for OpenRouter
+        response = self.openrouter_client.embeddings.create(
+            model=self.openrouter_embedding_model,
+            input=texts,
+            encoding_format="float",
+        )
+        return [item.embedding for item in response.data]
 
     @retry(
         stop=stop_after_attempt(3),
@@ -244,18 +257,19 @@ class LLMClient:
         retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError)),
         reraise=True,
     )
-    def _embed_batch(
-        self, texts: List[str], input_type: str
-    ) -> List[List[float]]:
-        """Embed a single batch with retry logic."""
-        self._throttle()
+    def _embed_nvidia(self, texts: List[str]) -> List[List[float]]:
+        """Embed using NVIDIA NIM (fallback, 2048-dim)."""
+        if not self.nvidia_client:
+            raise ValueError("NVIDIA NIM client not available")
 
-        response = self.embedding_client.embeddings.create(
-            model=self.embedding_model,
+        self._throttle_nvidia()
+
+        response = self.nvidia_client.embeddings.create(
+            model=self.nvidia_embedding_model,
             input=texts,
             encoding_format="float",
             extra_body={
-                "input_type": input_type,
+                "input_type": "passage",
                 "truncate": "NONE",
             },
         )
@@ -264,14 +278,30 @@ class LLMClient:
     # ── Health Check ─────────────────────────────────────────────────
 
     def health_check(self) -> Dict[str, bool]:
-        """Check connectivity to LLM providers."""
-        health = {"nvidia": False, "groq": False, "embedding": False}
+        """Check connectivity to all LLM providers."""
+        health = {
+            "openrouter": False,
+            "nvidia": False,
+            "groq": False,
+            "embeddings": False,
+        }
 
-        try:
-            self.nvidia_client.models.list()
-            health["nvidia"] = True
-        except Exception:
-            pass
+        if self.openrouter_client:
+            try:
+                self.openrouter_client.models.list()
+                health["openrouter"] = True
+                health["embeddings"] = True  # OpenRouter provides embeddings
+            except Exception:
+                pass
+
+        if self.nvidia_client:
+            try:
+                self.nvidia_client.models.list()
+                health["nvidia"] = True
+                if not health["embeddings"]:
+                    health["embeddings"] = True  # NVIDIA can also provide embeddings
+            except Exception:
+                pass
 
         if self.groq_client:
             try:
@@ -280,10 +310,12 @@ class LLMClient:
             except Exception:
                 pass
 
-        try:
-            self._embed_batch(["health check"], "query")
-            health["embedding"] = True
-        except Exception:
-            pass
-
         return health
+
+    # ── Legacy Compatibility ────────────────────────────────────────
+
+    def get_active_embedding_dimension(self) -> int:
+        """Return the embedding dimension for the active provider."""
+        if self.openrouter_client:
+            return self.settings.openrouter_embedding_dimension
+        return self.settings.nvidia_embedding_dimension

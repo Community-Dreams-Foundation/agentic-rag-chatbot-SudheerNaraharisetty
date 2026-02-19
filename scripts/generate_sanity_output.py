@@ -102,11 +102,17 @@ class SanityCheckRunner:
             self.results["system_info"]["config_loaded"] = True
 
             # Check API keys
+            openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
             nvidia_key = os.getenv("NVIDIA_API_KEY", "")
-            if nvidia_key and "your-key" not in nvidia_key:
-                logger.info("NVIDIA API key found")
+
+            if openrouter_key and "your-key" not in openrouter_key:
+                logger.info("OpenRouter API key found (primary)")
+            elif nvidia_key and "your-key" not in nvidia_key:
+                logger.info("NVIDIA API key found (fallback)")
             else:
-                self.results["errors"].append("NVIDIA_API_KEY not configured")
+                self.results["errors"].append(
+                    "No valid API key configured (need OPENROUTER_API_KEY or NVIDIA_API_KEY)"
+                )
 
             # Initialize LLM client
             try:
@@ -507,12 +513,12 @@ os.system("echo blocked")
             },
             {
                 "question": "What embedding model is used?",
-                "answer": "nvidia/llama-3.2-nv-embedqa-1b-v2 with 2048-dimensional embeddings, optimized for QA retrieval with support for 26 languages and 8K token context.",
+                "answer": "qwen/qwen3-embedding-8b via OpenRouter with 4096-dimensional embeddings, SOTA multilingual retrieval, 32K token context. Falls back to NVIDIA llama-3.2-nv-embedqa-1b-v2 (2048-dim) if OpenRouter unavailable.",
                 "citations": [
                     {
                         "source": "config.py",
                         "locator": "embedding settings",
-                        "snippet": "embedding_model: nvidia/llama-3.2-nv-embedqa-1b-v2, embedding_dimension: 2048",
+                        "snippet": "openrouter_embedding_model: qwen/qwen3-embedding-8b, openrouter_embedding_dimension: 4096",
                     }
                 ],
             },
@@ -555,8 +561,9 @@ os.system("echo blocked")
         """Build system info section."""
         self.results["system_info"].update(
             {
-                "llm": "Kimi K2.5 via NVIDIA NIM (moonshotai/kimi-k2.5)",
-                "embedding": "nvidia/llama-3.2-nv-embedqa-1b-v2 (2048-dim)",
+                "llm": "Kimi K2.5 via OpenRouter (moonshotai/kimi-k2.5)",
+                "embedding": "qwen/qwen3-embedding-8b via OpenRouter (4096-dim)",
+                "embedding_fallback": "nvidia/llama-3.2-nv-embedqa-1b-v2 (2048-dim)",
                 "reranker": "nvidia/llama-3.2-nv-rerankqa-1b-v2 (8192 token context)",
                 "vector_db": "FAISS IndexFlatIP (cosine similarity)",
                 "keyword_search": "BM25Okapi with RRF fusion",

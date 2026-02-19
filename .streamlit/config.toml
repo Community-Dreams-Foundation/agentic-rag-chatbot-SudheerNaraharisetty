@@ -1,0 +1,15 @@
+[server]
+enableFileWatcher = false
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+magicEnabled = true
+fastReruns = true
+
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"

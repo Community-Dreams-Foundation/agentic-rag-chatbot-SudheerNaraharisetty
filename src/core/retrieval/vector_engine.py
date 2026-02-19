@@ -1,15 +1,18 @@
 """
 FAISS Vector Engine with SQLite metadata sidecar.
 Uses IndexFlatIP (inner product) on L2-normalized vectors for cosine similarity.
-Full 2048-dimensional embeddings from nvidia/llama-3.2-nv-embedqa-1b-v2.
+
+Supports dynamic embedding dimensions:
+  - OpenRouter (qwen3-embedding-8b): 4096 dimensions
+  - NVIDIA NIM (llama-3.2-nv-embedqa-1b-v2): 2048 dimensions
 """
 
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 import faiss
+import numpy as np
 
 from src.core.config import get_settings
 
@@ -17,7 +20,15 @@ from src.core.config import get_settings
 class DocumentMetadata:
     """Represents metadata for a document chunk."""
 
-    __slots__ = ("id", "filename", "page_num", "chunk_index", "text", "source", "file_type")
+    __slots__ = (
+        "id",
+        "filename",
+        "page_num",
+        "chunk_index",
+        "text",
+        "source",
+        "file_type",
+    )
 
     def __init__(
         self,
@@ -54,18 +65,23 @@ class FaissEngine:
     FAISS vector engine using IndexFlatIP (inner product) on L2-normalized
     vectors, which is mathematically equivalent to cosine similarity.
     Paired with SQLite sidecar for chunk metadata storage.
+
+    Dimension is determined by the active embedding provider:
+      - OpenRouter (qwen3-embedding-8b): 4096
+      - NVIDIA NIM (llama-3.2-nv-embedqa): 2048
     """
 
     def __init__(
         self,
         index_path: Optional[Path] = None,
         db_path: Optional[Path] = None,
-        dimension: int = 2048,
+        dimension: Optional[int] = None,
     ):
         self.settings = get_settings()
         self.index_path = index_path or self.settings.faiss_index_path
         self.db_path = db_path or self.settings.sqlite_db_path
-        self.dimension = dimension
+        # Use dynamic dimension from config (property based on active provider)
+        self.dimension = dimension or self.settings.embedding_dimension
 
         self.index = self._init_faiss_index()
         self._init_sqlite()

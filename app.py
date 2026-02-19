@@ -2,18 +2,17 @@
 """
 Agentic RAG Chatbot — Streamlit Application
 Features: File Upload + RAG with Citations, Persistent Memory, Safe Sandbox + Weather Tools
-Powered by Kimi K2.5 on NVIDIA NIM with Groq auto-fallback.
+
+Providers:
+  - LLM: OpenRouter (Kimi K2.5) → Groq (Llama 3.1 fallback)
+  - Embeddings: OpenRouter (Qwen3 8B, 4096-dim) → NVIDIA NIM (fallback)
+  - Reranking: NVIDIA NIM (llama-3.2-nv-rerankqa-1b-v2)
 
 Author: Sai Sudheer Naraharisetty
 Hackathon: Community Dreams Foundation - Agentic RAG Chatbot Challenge
 """
 
-# Fix Streamlit + PyTorch file watcher conflict
-# Must be set BEFORE any torch imports
 import os
-
-os.environ["STREAMLIT_SERVER_ENABLE_FILE_WATCHER"] = "false"
-
 import sys
 import json
 import logging
@@ -131,8 +130,8 @@ def main():
     # Header
     st.title("🤖 Agentic RAG Chatbot")
     st.caption(
-        "Powered by Kimi K2.5 | Hybrid Search (FAISS + BM25) | "
-        "Persistent Memory | Safe Sandbox + Weather Tools"
+        "Powered by OpenRouter (Kimi K2.5 + Qwen3 Embeddings) | "
+        "Hybrid Search + Reranking | Persistent Memory | Safe Sandbox"
     )
 
     # Check initialization
@@ -140,9 +139,9 @@ def main():
         st.error("System failed to initialize. Check your API keys in `.env` file.")
         st.code(
             "# Required in .env:\n"
-            "NVIDIA_API_KEY=nvapi-your-key-here\n"
-            "NVIDIA_EMBEDDING_API_KEY=nvapi-your-embedding-key-here\n"
-            "GROQ_API_KEY=gsk-your-key-here  # optional fallback",
+            "OPENROUTER_API_KEY=sk-or-your-key-here  # Primary LLM + Embeddings\n"
+            "NVIDIA_RERANK_API_KEY=nvapi-your-key-here  # Reranking\n"
+            "GROQ_API_KEY=gsk-your-key-here  # Optional LLM fallback",
             language="bash",
         )
         if "init_error" in st.session_state:
@@ -158,10 +157,10 @@ def main():
         # LLM Provider Selection
         llm_provider = st.selectbox(
             "LLM Provider",
-            ["NVIDIA NIM (Kimi K2.5)", "Groq (Llama 3.1)"],
+            ["OpenRouter (Kimi K2.5)", "Groq (Llama 3.1)"],
             index=0,
         )
-        model = "nvidia" if "NVIDIA" in llm_provider else "groq"
+        model = "openrouter" if "OpenRouter" in llm_provider else "groq"
 
         st.divider()
 
@@ -199,24 +198,26 @@ def main():
         st.metric("BM25 Corpus", stats["bm25_documents"])
 
         # API Key Status
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         nvidia_key = os.getenv("NVIDIA_API_KEY", "")
         groq_key = os.getenv("GROQ_API_KEY", "")
-        embed_key = os.getenv("NVIDIA_EMBEDDING_API_KEY", "")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
+            if openrouter_key and "your-key" not in openrouter_key:
+                st.success("OpenRouter", icon="✅")
+            else:
+                st.error("OpenRouter", icon="❌")
+        with col2:
             if nvidia_key and "your-key" not in nvidia_key:
                 st.success("NVIDIA NIM", icon="✅")
             else:
-                st.error("NVIDIA NIM", icon="❌")
-        with col2:
+                st.warning("NVIDIA NIM", icon="⚠️")
+        with col3:
             if groq_key and "your-key" not in groq_key:
                 st.success("Groq", icon="✅")
             else:
                 st.warning("Groq", icon="⚠️")
-
-        if embed_key and "your-key" not in embed_key:
-            st.success("Embedding API", icon="✅")
 
     # ── Main Content Tabs ───────────────────────────────────────
 
