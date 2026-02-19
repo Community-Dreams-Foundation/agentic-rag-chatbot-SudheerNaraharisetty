@@ -94,7 +94,7 @@ function startFrontend() {
   });
 }
 
-function waitForBackend(maxAttempts = 30) {
+function waitForBackend(maxAttempts = 60) {
   return new Promise((resolve) => {
     let attempts = 0;
     const check = () => {

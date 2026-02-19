@@ -118,33 +118,65 @@ async def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=503, detail="System not initialized")
 
     async def event_generator():
-        # Stream response from pipeline
-        try:
-            for event_type, data in state.pipeline.query_stream(
-                question=req.message,
-                chat_history=req.history,
-                model=req.model
-            ):
-                payload = None
-                if event_type == "token":
-                    payload = {"type": "token", "content": data}
-                elif event_type == "tool":
-                    payload = {"type": "tool", "tool": data["tool"], "args": data["args"]}
-                elif event_type == "citations":
-                    payload = {"type": "citations", "citations": data}
-                elif event_type == "status":
-                    payload = {"type": "status", "content": data}
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_event_loop()
 
-                if payload:
-                     yield ServerSentEvent(data=json.dumps(payload))
-                else:
-                     logger.warning(f"Unknown event type: {event_type} Data: {str(data)[:50]}")
+        def _enqueue(item):
+            """Thread-safe enqueue from the worker thread."""
+            loop.call_soon_threadsafe(queue.put_nowait, item)
 
-            # Done
-            yield ServerSentEvent(data=json.dumps({"type": "done"}))
-        except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            yield ServerSentEvent(data=json.dumps({"type": "error", "content": str(e)}))
+        def _run_sync_pipeline():
+            """Run the blocking sync generator in a thread."""
+            try:
+                for event_type, data in state.pipeline.query_stream(
+                    question=req.message,
+                    chat_history=req.history,
+                    model=req.model
+                ):
+                    _enqueue((event_type, data))
+            except Exception as e:
+                _enqueue(("_error", str(e)))
+            finally:
+                _enqueue(None)  # sentinel: pipeline done
+
+        # Start the sync pipeline in a thread pool
+        loop.run_in_executor(None, _run_sync_pipeline)
+
+        # Consume events from the queue — each await yields to the event loop,
+        # allowing uvicorn to flush SSE events to the client in real-time
+        token_count = 0
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+
+            event_type, data = item
+
+            if event_type == "_error":
+                logger.error(f"Pipeline error: {data}")
+                yield ServerSentEvent(data=json.dumps({"type": "error", "content": data}))
+                break
+
+            payload = None
+            if event_type == "token":
+                token_count += 1
+                payload = {"type": "token", "content": data}
+            elif event_type == "tool":
+                logger.info(f"SSE tool: {data.get('tool')}")
+                payload = {"type": "tool", "tool": data["tool"], "args": data["args"]}
+            elif event_type == "citations":
+                logger.info(f"SSE citations: {len(data)} sources")
+                payload = {"type": "citations", "citations": data}
+            elif event_type == "status":
+                payload = {"type": "status", "content": data}
+
+            if payload:
+                yield ServerSentEvent(data=json.dumps(payload))
+            else:
+                logger.warning(f"Unknown event type: {event_type} Data: {str(data)[:50]}")
+
+        logger.info(f"SSE stream complete: {token_count} token events yielded")
+        yield ServerSentEvent(data=json.dumps({"type": "done"}))
 
     return EventSourceResponse(event_generator())
 
@@ -162,7 +194,8 @@ async def upload_document(file: UploadFile = File(...)):
         # Store file bytes for serving in PDF viewer
         state.uploaded_files[file.filename] = content
 
-        result = state.pipeline.ingest_bytes(content, file.filename)
+        # Run blocking ingest in thread pool to avoid blocking the event loop
+        result = await asyncio.to_thread(state.pipeline.ingest_bytes, content, file.filename)
 
         if result["success"]:
             state.ingested_docs.append(file.filename)

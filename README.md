@@ -46,9 +46,9 @@ You may implement one feature or multiple. Partial implementations are acceptabl
 ---
 
 ## Participant Info (Required)
-- Full Name:
-- Email:
-- GitHub Username:
+- Full Name: Sai Sudheer Naraharisetty
+- Email: [sudheernaraharisetti7@gmail.com](mailto:sudheernaraharisetti7@gmail.com)
+- GitHub Username: [SudheerNaraharisetty](https://github.com/SudheerNaraharisetty)
 
 ---
 

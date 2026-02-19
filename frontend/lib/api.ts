@@ -1,4 +1,8 @@
-const API_URL = 'http://localhost:8000/api';
+// Proxied through Next.js rewrite (avoids CORS for uploads/JSON requests)
+const API_URL = '/api';
+
+// Direct backend URL for SSE streaming (Next.js proxy buffers streams)
+const BACKEND_URL = 'http://localhost:8000/api';
 
 interface ChatHistory {
     role: string;
@@ -43,7 +47,8 @@ export const apiClient = {
         options?: { model?: string; history?: ChatHistory[] }
     ) => {
         try {
-            const res = await fetch(`${API_URL}/chat`, {
+            // SSE streaming goes DIRECT to backend (not through Next.js proxy)
+            const res = await fetch(`${BACKEND_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -75,39 +80,44 @@ export const apiClient = {
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
+                // Normalize \r\n to \n (sse-starlette sends \r\n line endings)
+                buffer = buffer.replace(/\r\n/g, '\n');
                 const lines = buffer.split('\n\n');
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    if (line.trim().startsWith('data: ')) {
-                        const jsonStr = line.trim().slice(6);
-                        if (!jsonStr) continue;
+                    // SSE events may have multiple fields; extract data lines
+                    const dataLines = line
+                        .split('\n')
+                        .filter(l => l.startsWith('data: '))
+                        .map(l => l.slice(6));
+                    const jsonStr = dataLines.join('\n');
+                    if (!jsonStr) continue;
 
-                        try {
-                            const data = JSON.parse(jsonStr);
-                            switch (data.type) {
-                                case 'token':
-                                    callbacks.onToken(data.content);
-                                    break;
-                                case 'tool':
-                                    callbacks.onTool?.({ tool: data.tool, args: data.args });
-                                    break;
-                                case 'citations':
-                                    callbacks.onCitations?.(data.citations || []);
-                                    break;
-                                case 'status':
-                                    callbacks.onStatus?.(data.content || '');
-                                    break;
-                                case 'error':
-                                    callbacks.onError?.(data.content || 'Unknown error');
-                                    break;
-                                case 'done':
-                                    callbacks.onDone();
-                                    return;
-                            }
-                        } catch (e) {
-                            console.warn('SSE parse error:', e, 'chunk:', jsonStr);
+                    try {
+                        const data = JSON.parse(jsonStr);
+                        switch (data.type) {
+                            case 'token':
+                                callbacks.onToken(data.content);
+                                break;
+                            case 'tool':
+                                callbacks.onTool?.({ tool: data.tool, args: data.args });
+                                break;
+                            case 'citations':
+                                callbacks.onCitations?.(data.citations || []);
+                                break;
+                            case 'status':
+                                callbacks.onStatus?.(data.content || '');
+                                break;
+                            case 'error':
+                                callbacks.onError?.(data.content || 'Unknown error');
+                                break;
+                            case 'done':
+                                callbacks.onDone();
+                                return;
                         }
+                    } catch (e) {
+                        console.warn('SSE parse error:', e, 'chunk:', jsonStr);
                     }
                 }
             }
@@ -123,13 +133,18 @@ export const apiClient = {
     uploadFile: async (file: File): Promise<{ status: string; filename?: string; chunks?: number; message?: string }> => {
         const formData = new FormData();
         formData.append('file', file);
-        const res = await fetch(`${API_URL}/upload`, {
-            method: 'POST',
-            body: formData,
-        });
+        let res: Response;
+        try {
+            res = await fetch(`${API_URL}/upload`, {
+                method: 'POST',
+                body: formData,
+            });
+        } catch (e) {
+            throw new Error('Cannot reach backend. Is the server running on port 8000?');
+        }
         if (!res.ok) {
             const errText = await res.text();
-            throw new Error(`Upload failed: ${res.status} ${errText}`);
+            throw new Error(`Upload failed (${res.status}): ${errText}`);
         }
         return res.json();
     },

@@ -14,10 +14,10 @@ import { apiClient } from "@/lib/api"
 import { toast } from "sonner"
 
 const TOOL_ICONS: Record<string, React.ReactNode> = {
-    search_documents: <Search className="w-3 h-3" />,
-    get_weather: <Cloud className="w-3 h-3" />,
-    execute_code: <Code2 className="w-3 h-3" />,
-    write_memory: <Brain className="w-3 h-3" />,
+    search_documents: <Search className="w-3.5 h-3.5" />,
+    get_weather: <Cloud className="w-3.5 h-3.5" />,
+    execute_code: <Code2 className="w-3.5 h-3.5" />,
+    write_memory: <Brain className="w-3.5 h-3.5" />,
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -44,14 +44,14 @@ function ThinkingBlock({ steps, isActive }: { steps: ThinkingStep[]; isActive: b
         <div className="mb-2">
             <button
                 onClick={() => setOpen(!open)}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-mono text-orange-400/80 hover:text-orange-300 rounded transition-colors"
+                className="flex items-center gap-1.5 px-2 py-1 text-xs font-mono text-orange-400/80 hover:text-orange-300 rounded transition-colors"
             >
                 {isActive ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
-                    <CheckCircle2 className="w-3 h-3 text-green-500" />
+                    <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
                 )}
-                {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                 <span>
                     {isActive ? "Thinking..." : `${steps.length} step${steps.length > 1 ? 's' : ''} completed`}
                 </span>
@@ -68,11 +68,11 @@ function ThinkingBlock({ steps, isActive }: { steps: ThinkingStep[]; isActive: b
                     >
                         <div className="ml-2 pl-3 border-l-2 border-orange-500/20 space-y-1 mt-1">
                             {steps.map((step, i) => (
-                                <div key={i} className="flex items-center gap-2 text-[11px] font-mono text-zinc-500 py-0.5">
+                                <div key={i} className="flex items-center gap-2 text-xs font-mono text-zinc-500 py-0.5">
                                     {step.type === 'tool' ? (
-                                        <Wrench className="w-3 h-3 text-orange-400/60 shrink-0" />
+                                        <Wrench className="w-3.5 h-3.5 text-orange-400/60 shrink-0" />
                                     ) : (
-                                        <Zap className="w-3 h-3 text-zinc-600 shrink-0" />
+                                        <Zap className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
                                     )}
                                     <span className="truncate">{step.content}</span>
                                 </div>
@@ -99,10 +99,10 @@ function CitationsBlock({ citations, onCitationClick }: { citations: Citation[];
         <div className="mt-2 border border-orange-500/15 rounded-lg bg-orange-500/5">
             <button
                 onClick={() => setOpen(!open)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono text-orange-400/80 hover:text-orange-300 w-full transition-colors"
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono text-orange-400/80 hover:text-orange-300 w-full transition-colors"
             >
-                {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                <FileText className="w-3 h-3" />
+                {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                <FileText className="w-3.5 h-3.5" />
                 {citations.length} source{citations.length > 1 ? 's' : ''} cited
             </button>
             <AnimatePresence>
@@ -113,12 +113,12 @@ function CitationsBlock({ citations, onCitationClick }: { citations: Citation[];
                         exit={{ height: 0, opacity: 0 }}
                         className="overflow-hidden"
                     >
-                        <div className="px-3 pb-2 space-y-1.5">
+                        <div className="px-3 pb-2.5 space-y-2">
                             {citations.map((c, i) => (
                                 <button
                                     key={i}
                                     onClick={() => onCitationClick?.(c)}
-                                    className="w-full text-left citation-highlight text-[11px] font-mono rounded transition-all hover:bg-yellow-400/20 cursor-pointer"
+                                    className="w-full text-left citation-highlight text-xs font-mono rounded transition-all hover:bg-yellow-400/20 cursor-pointer"
                                 >
                                     <span className="text-yellow-400 font-semibold">[{c.source}, {c.locator}]</span>
                                     <p className="text-zinc-500 mt-0.5 line-clamp-2">{c.snippet}</p>
@@ -135,10 +135,10 @@ function CitationsBlock({ citations, onCitationClick }: { citations: Citation[];
 function ToolCallsBlock({ tools }: { tools: ToolCall[] }) {
     if (!tools.length) return null
     return (
-        <div className="mt-1 flex flex-wrap gap-1">
+        <div className="mt-1 flex flex-wrap gap-1.5">
             {tools.map((tc, i) => (
-                <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-full">
-                    {TOOL_ICONS[tc.tool] || <Wrench className="w-2.5 h-2.5" />}
+                <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-full">
+                    {TOOL_ICONS[tc.tool] || <Wrench className="w-3 h-3" />}
                     {tc.tool}
                 </span>
             ))}
@@ -149,8 +149,8 @@ function ToolCallsBlock({ tools }: { tools: ToolCall[] }) {
 function ResponseTimeBadge({ time }: { time: number }) {
     const formatted = time < 1000 ? `${time}ms` : `${(time / 1000).toFixed(1)}s`
     return (
-        <span className="text-[9px] font-mono text-zinc-600 bg-zinc-800/50 px-1.5 py-0.5 rounded">
-            <Clock className="w-2.5 h-2.5 inline mr-0.5 -mt-px" />
+        <span className="text-[10px] font-mono text-zinc-600 bg-zinc-800/50 px-1.5 py-0.5 rounded">
+            <Clock className="w-3 h-3 inline mr-0.5 -mt-px" />
             {formatted}
         </span>
     )
@@ -345,7 +345,7 @@ export function ChatInterface() {
                             </p>
                             <div className="flex gap-2 justify-center mt-4">
                                 {['RAG Search', 'Weather', 'Sandbox', 'Memory'].map(f => (
-                                    <span key={f} className="text-[10px] font-mono px-2 py-1 rounded-full bg-orange-500/10 text-orange-400/70 border border-orange-500/15">
+                                    <span key={f} className="text-[11px] font-mono px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-400/70 border border-orange-500/15">
                                         {f}
                                     </span>
                                 ))}
@@ -366,7 +366,7 @@ export function ChatInterface() {
                                         animate={{ opacity: 1, y: 0 }}
                                         className="text-center"
                                     >
-                                        <span className="text-[11px] font-mono text-zinc-500 bg-zinc-800/30 px-3 py-1.5 rounded-full border border-zinc-700/30">
+                                        <span className="text-xs font-mono text-zinc-500 bg-zinc-800/30 px-3 py-1.5 rounded-full border border-zinc-700/30">
                                             {msg.content}
                                         </span>
                                     </motion.div>
@@ -393,7 +393,7 @@ export function ChatInterface() {
 
                                     <div className="flex-1 space-y-1 mt-0.5 min-w-0">
                                         <div className="flex items-center gap-2">
-                                            <span className={`text-[11px] font-bold font-mono uppercase ${
+                                            <span className={`text-xs font-bold font-mono uppercase ${
                                                 msg.role === 'user' ? 'text-zinc-500' : 'text-orange-500'
                                             }`}>
                                                 {msg.role === 'user' ? 'You' : 'Agent'}
@@ -403,7 +403,7 @@ export function ChatInterface() {
                                             )}
                                         </div>
 
-                                        {/* Thinking steps (collapsible like Claude Code) */}
+                                        {/* Thinking steps (collapsible) */}
                                         {msg.role === 'agent' && msg.thinkingSteps && msg.thinkingSteps.length > 0 && (
                                             <ThinkingBlock
                                                 steps={msg.thinkingSteps}
@@ -423,8 +423,8 @@ export function ChatInterface() {
                                             ) : (
                                                 isThinkingNow && !msg.thinkingSteps?.length && (
                                                     <span className="inline-flex items-center gap-1 text-zinc-600">
-                                                        <Loader2 className="w-3 h-3 animate-spin text-orange-500" />
-                                                        <span className="text-[11px]">Processing...</span>
+                                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-orange-500" />
+                                                        <span className="text-xs">Processing...</span>
                                                     </span>
                                                 )
                                             )}
@@ -503,7 +503,7 @@ export function ChatInterface() {
                     </div>
 
                     <div className="text-center mt-2">
-                        <span className="text-[9px] font-mono text-zinc-700">
+                        <span className="text-[10px] font-mono text-zinc-700">
                             Built by Sai Sudheer Naraharisetty for the CDF Hackathon
                         </span>
                     </div>
