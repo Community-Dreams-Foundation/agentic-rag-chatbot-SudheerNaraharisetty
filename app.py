@@ -130,7 +130,7 @@ def main():
     # Header
     st.title("🤖 Agentic RAG Chatbot")
     st.caption(
-        "Powered by OpenRouter (Kimi K2.5 + Qwen3 Embeddings) | "
+        "Powered by Llama 3.3 70B + Qwen3 Embeddings | "
         "Hybrid Search + Reranking | Persistent Memory | Safe Sandbox"
     )
 
@@ -157,10 +157,10 @@ def main():
         # LLM Provider — Groq default for speed (tool routing always uses Groq)
         llm_provider = st.selectbox(
             "Synthesis Model",
-            ["Groq (Llama 3.3 70B) — Fast", "OpenRouter (Kimi K2.5) — Quality"],
+            ["OpenRouter (Llama 3.3 70B) — Quality", "Groq (Llama 3.3 70B) — Fast"],
             index=0,
         )
-        model = "groq" if "Groq" in llm_provider else "openrouter"
+        model = "groq" if llm_provider.startswith("Groq") else "openrouter"
 
         enable_memory = st.checkbox("Memory System", value=True)
         enable_streaming = st.checkbox("Streaming", value=True)

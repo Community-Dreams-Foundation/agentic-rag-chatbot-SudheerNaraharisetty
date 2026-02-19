@@ -2,7 +2,7 @@
 LLM Client: Unified interface for OpenRouter (primary), NVIDIA NIM (embeddings fallback), and Groq (LLM fallback).
 
 Provider Priority:
-  - LLM: OpenRouter (Kimi K2.5) → Groq (Llama 3.1)
+  - LLM: OpenRouter (Llama 3.3 70B) → Groq (Llama 3.3 70B)
   - Embeddings: OpenRouter (Qwen3 8B) → NVIDIA NIM (llama-3.2-nv-embedqa)
 
 Key Features:
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """
     Unified LLM client with:
-    - OpenRouter (primary): Kimi K2.5 + Qwen3 Embedding 8B
+    - OpenRouter (primary): Llama 3.3 70B + Qwen3 Embedding 8B
     - NVIDIA NIM (fallback): Embeddings only
     - Groq (fallback): LLM only
 
@@ -143,7 +143,7 @@ class LLMClient:
         stream: bool,
         **kwargs,
     ):
-        """Generate completion using OpenRouter (Kimi K2.5)."""
+        """Generate completion using OpenRouter (Llama 3.3 70B)."""
         if not self.openrouter_client:
             raise ValueError("OpenRouter client not available. Set OPENROUTER_API_KEY.")
 

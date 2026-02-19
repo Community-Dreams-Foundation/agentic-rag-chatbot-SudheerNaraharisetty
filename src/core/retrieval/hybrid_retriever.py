@@ -81,7 +81,7 @@ class HybridRetriever:
                     self.bm25 = data["bm25"]
                     self.corpus = data["corpus"]
                     self.corpus_metadata = data["metadata"]
-                logger.info(f"Loaded BM25 index with {len(self.corpus)} documents")
+                logger.info(f"Loaded persistent index from disk with {len(self.corpus)} documents")
             except Exception as e:
                 logger.warning(f"Failed to load BM25 index: {e}")
 

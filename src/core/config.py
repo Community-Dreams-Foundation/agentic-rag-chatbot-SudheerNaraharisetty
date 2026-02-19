@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         default="https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
     )
     openrouter_model: str = Field(
-        default="moonshotai/kimi-k2.5", alias="OPENROUTER_MODEL"
+        default="meta-llama/llama-3.3-70b-instruct", alias="OPENROUTER_MODEL"
     )
 
     # OpenRouter Embedding Configuration
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     nvidia_base_url: str = Field(
         default="https://integrate.api.nvidia.com/v1", alias="NVIDIA_BASE_URL"
     )
-    nvidia_model: str = Field(default="moonshotai/kimi-k2.5", alias="NVIDIA_MODEL")
+    nvidia_model: str = Field(default="meta-llama/llama-3.3-70b-instruct", alias="NVIDIA_MODEL")
     nvidia_embedding_model: str = Field(
         default="nvidia/llama-3.2-nv-embedqa-1b-v2", alias="NVIDIA_EMBEDDING_MODEL"
     )
