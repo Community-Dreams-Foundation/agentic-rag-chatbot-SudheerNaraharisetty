@@ -359,12 +359,22 @@ class WeatherQueryParser:
 
         # Extract time period
         time_period = "current"
-        if "last week" in query_lower or "past week" in query_lower:
+        if "tomorrow" in query_lower:
+            time_period = "tomorrow"
+        elif "today" in query_lower:
+            time_period = "today"
+        elif "this week" in query_lower or "next few days" in query_lower:
+            time_period = "this_week"
+        elif "next week" in query_lower:
+            time_period = "next_week"
+        elif "last week" in query_lower or "past week" in query_lower:
             time_period = "last_week"
         elif "yesterday" in query_lower:
             time_period = "yesterday"
         elif "last month" in query_lower or "past month" in query_lower:
             time_period = "last_month"
+        elif "forecast" in query_lower:
+            time_period = "this_week"
 
         # Check for comparison intent
         comparison = (
@@ -390,21 +400,32 @@ class WeatherQueryParser:
             Tuple of (YYYY-MM-DD, YYYY-MM-DD)
         """
         today = datetime.now()
-        end_date = today.strftime("%Y-%m-%d")
 
-        if time_period == "yesterday":
+        if time_period == "tomorrow":
+            tmrw = today + timedelta(days=1)
+            return (tmrw.strftime("%Y-%m-%d"), tmrw.strftime("%Y-%m-%d"))
+        elif time_period == "today":
+            d = today.strftime("%Y-%m-%d")
+            return (d, d)
+        elif time_period == "this_week":
+            end = today + timedelta(days=7)
+            return (today.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        elif time_period == "next_week":
+            start = today + timedelta(days=7)
+            end = today + timedelta(days=14)
+            return (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+        elif time_period == "yesterday":
             start = today - timedelta(days=1)
-            start_date = start.strftime("%Y-%m-%d")
+            return (start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         elif time_period == "last_week":
             start = today - timedelta(days=7)
-            start_date = start.strftime("%Y-%m-%d")
+            return (start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         elif time_period == "last_month":
             start = today - timedelta(days=30)
-            start_date = start.strftime("%Y-%m-%d")
+            return (start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         else:  # current
-            start_date = end_date
-
-        return (start_date, end_date)
+            d = today.strftime("%Y-%m-%d")
+            return (d, d)
 
 
 # ── Agent Tool Interface ──────────────────────────────────────────
@@ -447,13 +468,24 @@ def get_weather_for_agent(
         "period": period,
     }
 
+    # Determine if future (forecast API) or past (historical/archive API)
+    future_periods = {"current", "today", "tomorrow", "this_week", "next_week"}
+    past_periods = {"yesterday", "last_week", "last_month"}
+
     try:
-        if period == "current":
-            # Forecast API — hourly data
-            data = client.get_weather(lat, lon, hourly=[metric])
+        if period in future_periods:
+            # Forecast API — hourly data (handles today + up to 16 days ahead)
+            start_date, end_date = parser.get_date_range(period)
+            data = client.get_weather(
+                lat, lon,
+                start_date=start_date,
+                end_date=end_date,
+                hourly=[metric],
+            )
             analysis = analyzer.analyze_time_series(data, variable=metric)
             result["analysis"] = analysis
-        else:
+            result["date_range"] = {"start": start_date, "end": end_date}
+        elif period in past_periods:
             # Historical API — daily data
             start_date, end_date = parser.get_date_range(period)
             data = client.get_historical_weather(
@@ -464,6 +496,11 @@ def get_weather_for_agent(
             result["analysis"] = analysis
             result["anomalies"] = anomalies
             result["date_range"] = {"start": start_date, "end": end_date}
+        else:
+            # Fallback: treat as forecast
+            data = client.get_weather(lat, lon, hourly=[metric])
+            analysis = analyzer.analyze_time_series(data, variable=metric)
+            result["analysis"] = analysis
 
     except requests.RequestException as e:
         result["error"] = f"Weather API request failed: {e}"

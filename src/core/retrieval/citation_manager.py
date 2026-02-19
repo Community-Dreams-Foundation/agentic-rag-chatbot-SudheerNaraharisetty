@@ -64,13 +64,11 @@ class CitationManager:
             if score < min_relevance_threshold:
                 continue
 
-            # Create locator
+            # Create locator — show page number only (no chunk noise)
             if metadata.page_num > 0:
-                locator = f"page {metadata.page_num}"
-                if metadata.chunk_index > 0:
-                    locator += f", chunk {metadata.chunk_index}"
+                locator = f"Page {metadata.page_num}"
             else:
-                locator = f"chunk {metadata.chunk_index}"
+                locator = "Page 1"
 
             citation = Citation(
                 source=metadata.filename,

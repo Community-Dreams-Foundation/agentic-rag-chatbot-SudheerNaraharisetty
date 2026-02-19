@@ -86,9 +86,7 @@ class RAGPipeline:
 
                 passages = []
                 for metadata, score, source_type in retrieved_docs:
-                    locator = f"page {metadata.page_num}"
-                    if metadata.chunk_index > 0:
-                        locator += f", chunk {metadata.chunk_index}"
+                    locator = f"Page {metadata.page_num}" if metadata.page_num > 0 else "Page 1"
 
                     passages.append(
                         {
@@ -112,7 +110,7 @@ class RAGPipeline:
             metric: str = "temperature_2m",
             period: str = "current",
         ) -> dict:
-            """Get weather data for a location. Metric options: temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m. Period options: current, yesterday, last_week, last_month."""
+            """Get weather data for a location. Metric options: temperature_2m, relative_humidity_2m, precipitation, wind_speed_10m. Period options: today, tomorrow, this_week, next_week, yesterday, last_week, last_month, current."""
             return get_weather_for_agent(
                 location=location, metric=metric, period=period
             )
